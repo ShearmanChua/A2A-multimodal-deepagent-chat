@@ -1,0 +1,99 @@
+version: '3.5'
+
+networks:
+  agent:
+
+services:
+  multimodal-chat:
+    build:
+      context: ../multimodal_chat_frontend
+      dockerfile: build/Dockerfile
+    container_name: research-multimodal-chat-1
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+      - SERVER_PORT=3002
+    volumes:
+      - chat-data:/app/data
+    networks:
+      - agent
+    restart: unless-stopped
+
+  multimodal-deepagent:
+    image: multimodal-deepagent:${AGENT_VERSION:-0.1.0}
+    build:
+      context: ../multimodal_deepagent
+      dockerfile: build/Dockerfile
+    env_file:
+      - .env
+    environment:
+      MCP_SERVER_URL: http://research-mcp-server-1:8000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      MINIO_BUCKET: ${MINIO_BUCKET:-data}
+      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-}
+      MINIO_PRESIGN_EXPIRY: ${MINIO_PRESIGN_EXPIRY:-3600}
+      MAX_VIDEO_FRAMES: ${MAX_VIDEO_FRAMES:-8}
+    networks:
+      - agent
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../multimodal_deepagent/src:/app/src
+    ports:
+      - "10010:10010"
+    depends_on:
+      - minio
+      - mcp-server
+    command: ["uv", "run", "python", "src/main.py", "--host", "0.0.0.0", "--port", "10010"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    networks:
+      - agent
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp-server:
+    image: duckduckgo-mcp-tool:${MCP_SERVER_VERSION}
+    env_file:
+      - .env
+    networks:
+      - agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../mcp_tools/src:/app/src
+  
+  phoenix:
+    image: arizephoenix/phoenix:${PHOENIX_VERSION}
+    environment:
+      - PHOENIX_WORKING_DIR=/app/db
+    networks:
+      - agent
+    volumes:
+      - ../phoenix:/app/db
+    ports:
+      - "6006:6006"  # UI and OTLP HTTP collector
+      - "4317:4317"  # OTLP gRPC collector
+
+volumes:
+  minio-data:
+  chat-data:

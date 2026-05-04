@@ -1,0 +1,21 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY server/package.json server/package-lock.json* ./
+
+# Install dependencies
+RUN npm install --production
+
+# Copy source files
+COPY server/ ./
+
+# Create data directory
+RUN mkdir -p data tmp/uploads
+
+EXPOSE 3002
+
+ENV NODE_ENV=production
+
+CMD ["node", "index.js"]
