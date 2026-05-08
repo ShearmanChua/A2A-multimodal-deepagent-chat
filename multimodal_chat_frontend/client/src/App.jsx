@@ -4,6 +4,9 @@ import Header from "./components/Header";
 import AgentSelector from "./components/AgentSelector";
 import AgentRegistry from "./components/AgentRegistry";
 import ChatView from "./components/ChatView";
+import DocumentIngestion from "./components/DocumentIngestion";
+import SearchKnowledgeBase from "./components/SearchKnowledgeBase";
+import Settings from "./components/Settings";
 
 /**
  * Main App component with three main views:
@@ -20,6 +23,43 @@ export default function App() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [loadingAgents, setLoadingAgents] = useState(true);
   
+  // Ingestion job state (polled at app level so badge stays live across tabs)
+  const [ingestJobs, setIngestJobs] = useState([]);
+
+  const fetchIngestJobs = useCallback(async () => {
+    try {
+      const resp = await fetch("/ingest/jobs");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const incoming = data.jobs || [];
+      // Only replace state if the server actually has jobs, or we have none.
+      // This prevents a server restart from wiping an in-progress display.
+      setIngestJobs((prev) => (incoming.length > 0 || prev.length === 0 ? incoming : prev));
+    } catch { /* service may be down */ }
+  }, []);
+
+  // Poll every 2 s while any job is still running.
+  useEffect(() => {
+    const hasRunning = ingestJobs.some((j) => j.status === "running");
+    if (!hasRunning) return;
+    const id = setInterval(fetchIngestJobs, 2000);
+    return () => clearInterval(id);
+  }, [ingestJobs, fetchIngestJobs]);
+
+  // Re-fetch whenever the user returns to the ingest tab.
+  useEffect(() => {
+    if (activeTab === "ingest") fetchIngestJobs();
+  }, [activeTab, fetchIngestJobs]);
+
+  // Initial fetch on mount.
+  useEffect(() => { fetchIngestJobs(); }, [fetchIngestJobs]);
+
+  const handleJobStarted = useCallback(async () => {
+    await fetchIngestJobs();
+  }, [fetchIngestJobs]);
+
+  const runningJobCount = ingestJobs.filter((j) => j.status === "running").length;
+
   // Chat state
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -629,6 +669,7 @@ export default function App() {
         onTabChange={setActiveTab}
         selectedAgent={selectedAgent}
         onBackToAgents={handleBackToAgents}
+        runningJobCount={runningJobCount}
       />
 
       {/* Main content */}
@@ -652,6 +693,25 @@ export default function App() {
               setActiveTab("agents");
             }}
           />
+        )}
+
+        {activeTab === "ingest"  && (
+          <div className="h-full overflow-y-auto">
+            <DocumentIngestion
+              jobs={ingestJobs}
+              onJobStarted={handleJobStarted}
+            />
+          </div>
+        )}
+        {activeTab === "search"  && (
+          <div className="h-full overflow-y-auto">
+            <SearchKnowledgeBase />
+          </div>
+        )}
+        {activeTab === "settings" && (
+          <div className="h-full overflow-y-auto">
+            <Settings />
+          </div>
         )}
 
         {activeTab === "chat" && selectedAgent && (

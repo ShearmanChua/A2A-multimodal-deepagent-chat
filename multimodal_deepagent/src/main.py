@@ -1,21 +1,4 @@
-"""
-Multimodal DeepAgent A2A Server — Entry Point.
-
-Starts an A2A-protocol server that accepts text, images, and videos.
-Media is uploaded to MinIO via boto3 and pre-signed URLs are passed to
-the LLM agent and MCP tools.
-
-Environment variables:
-    MODEL_NAME, MODEL_ENDPOINT, MODEL_API_KEY  — LLM configuration
-    MCP_SERVER_URL      — MCP tool server (default http://research-mcp-server-1:8000)
-    MINIO_ENDPOINT      — MinIO S3 endpoint (default minio:9000)
-    MINIO_ACCESS_KEY    — MinIO access key (default minioadmin)
-    MINIO_SECRET_KEY    — MinIO secret key (default minioadmin)
-    MINIO_SECURE        — Use HTTPS for MinIO (default false)
-    MINIO_BUCKET        — Default bucket (default data)
-    MINIO_EXTERNAL_ENDPOINT — External MinIO endpoint for pre-signed URLs
-    MINIO_PRESIGN_EXPIRY    — Pre-signed URL expiry in seconds (default 3600)
-"""
+"""Multimodal DeepAgent A2A Server — entry point."""
 
 import logging
 import os
@@ -31,15 +14,11 @@ from a2a.server.tasks import (
     InMemoryPushNotificationConfigStore,
     InMemoryTaskStore,
 )
-from a2a.types import (
-    AgentCapabilities,
-    AgentCard,
-    AgentSkill,
-)
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from dotenv import load_dotenv
 
-from multimodal_agent.agent import MultimodalAgent
-from multimodal_agent.agent_executor import MultimodalAgentExecutor
+from multimodal_agent.agent.agent import MultimodalAgent
+from multimodal_agent.a2a_executor.agent_executor import MultimodalAgentExecutor
 
 load_dotenv()
 
@@ -47,57 +26,41 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class MissingConfigError(Exception):
-    """Raised when required configuration is missing."""
-
-
 @click.command()
-@click.option("--host", "host", default="0.0.0.0")
-@click.option("--port", "port", default=10010)
-def main(host, port):
+@click.option("--host", default="0.0.0.0")
+@click.option("--port", default=10010)
+def main(host: str, port: int) -> None:
     """Start the Multimodal DeepAgent A2A server."""
     try:
-        # Validate minimum configuration
         if not os.getenv("MODEL_NAME") and not os.getenv("TOOL_LLM_NAME"):
-            logger.warning(
-                "Neither MODEL_NAME nor TOOL_LLM_NAME is set. "
-                "Falling back to 'gpt-4o'."
-            )
-
-        capabilities = AgentCapabilities(streaming=True, push_notifications=True)
+            logger.warning("Neither MODEL_NAME nor TOOL_LLM_NAME is set — falling back to 'gpt-4o'.")
 
         skills = [
             AgentSkill(
-                id="multimodal_analysis",
-                name="Multimodal Analysis",
+                id="multimodal_rag",
+                name="Multimodal RAG",
                 description=(
-                    "Analyse images and videos using vision models and MCP tools. "
-                    "Supports object detection, target classification, and general "
-                    "visual question answering. Media is uploaded to MinIO and "
-                    "pre-signed URLs are used for tool integration."
+                    "Answer questions by searching Weaviate vector collections with hybrid "
+                    "search (BM25 + vector similarity). Accepts text queries and images; "
+                    "images are uploaded to SeaweedFS and pre-signed URLs are shared with "
+                    "MCP tools for multimodal retrieval."
                 ),
-                tags=[
-                    "image analysis",
-                    "video analysis",
-                    "object detection",
-                    "target classification",
-                    "multimodal",
-                ],
+                tags=["rag", "weaviate", "vector search", "multimodal", "image"],
                 examples=[
-                    "Describe what you see in this image.",
-                    "Detect all targets in the uploaded image.",
-                    "Classify the vehicle in the bounding box.",
-                    "What objects are present in this video?",
+                    "What documents mention transformer architectures?",
+                    "Find images similar to the one I uploaded.",
+                    "Search the knowledge base for information about this diagram.",
                 ],
             ),
             AgentSkill(
-                id="minio_media_management",
-                name="MinIO Media Management",
+                id="media_management",
+                name="Media Management",
                 description=(
-                    "Upload images and videos to MinIO object storage and "
-                    "generate pre-signed URLs for sharing and tool access."
+                    "Upload images and videos to SeaweedFS object storage and browse "
+                    "objects stored in MinIO. Generates pre-signed URLs for sharing "
+                    "and MCP tool access."
                 ),
-                tags=["minio", "upload", "storage", "pre-signed URL"],
+                tags=["seaweedfs", "minio", "storage", "upload", "pre-signed URL"],
                 examples=[
                     "Upload this image and give me the URL.",
                     "List objects in the MinIO bucket.",
@@ -108,50 +71,39 @@ def main(host, port):
         agent_card = AgentCard(
             name="Multimodal DeepAgent",
             description=(
-                "A multimodal research agent that processes images and videos. "
-                "Media is uploaded to MinIO storage and pre-signed URLs are "
-                "generated for the agent and MCP tools to use."
+                "A multimodal RAG agent that processes text and images. "
+                "Media is uploaded to SeaweedFS and pre-signed URLs are used "
+                "for both the vision model and MCP tools."
             ),
             url=os.environ.get("A2A_AGENT_URL", "http://localhost:10010"),
             version="1.0.0",
             default_input_modes=MultimodalAgent.SUPPORTED_CONTENT_TYPES,
             default_output_modes=["text", "text/plain"],
-            capabilities=capabilities,
+            capabilities=AgentCapabilities(streaming=True, push_notifications=True),
             skills=skills,
         )
 
-        httpx_client = httpx.AsyncClient()
-        push_config_store = InMemoryPushNotificationConfigStore()
-        push_sender = BasePushNotificationSender(
-            httpx_client=httpx_client,
-            config_store=push_config_store,
-        )
         task_store = InMemoryTaskStore()
+        push_config_store = InMemoryPushNotificationConfigStore()
         request_handler = DefaultRequestHandler(
             agent_executor=MultimodalAgentExecutor(task_store=task_store),
             task_store=task_store,
             push_config_store=push_config_store,
-            push_sender=push_sender,
-        )
-        server = A2AStarletteApplication(
-            agent_card=agent_card,
-            http_handler=request_handler,
+            push_sender=BasePushNotificationSender(
+                httpx_client=httpx.AsyncClient(),
+                config_store=push_config_store,
+            ),
         )
 
+        logger.info("Starting Multimodal DeepAgent on %s:%d", host, port)
         logger.info(
-            "Starting Multimodal DeepAgent A2A server on %s:%d", host, port
-        )
-        logger.info(
-            "MinIO endpoint: %s | MCP server: %s",
-            os.environ.get("MINIO_ENDPOINT", "minio:9000"),
+            "SeaweedFS: %s | MCP: %s",
+            os.environ.get("SEAWEEDFS_ENDPOINT", "not configured"),
             os.environ.get("MCP_SERVER_URL", "http://research-mcp-server-1:8000"),
         )
 
-        uvicorn.run(server.build(), host=host, port=port)
+        uvicorn.run(A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler).build(), host=host, port=port)
 
-    except MissingConfigError as e:
-        logger.error("Configuration error: %s", e)
-        sys.exit(1)
     except Exception as e:
         logger.error("Server startup failed: %s", e, exc_info=True)
         sys.exit(1)

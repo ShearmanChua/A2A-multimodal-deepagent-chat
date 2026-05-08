@@ -12,7 +12,8 @@ RUN pip install -U pip && pip install uv
 
 WORKDIR /app
 
-RUN uv pip install --system fastmcp ddgs pillow requests ultralytics torch torchvision minio
+RUN uv pip install --system fastmcp ddgs pillow requests ultralytics torch torchvision minio \
+    weaviate-client sentence-transformers
 
 COPY ./src ./src
 

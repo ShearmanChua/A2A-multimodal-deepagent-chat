@@ -14,10 +14,53 @@ services:
     environment:
       - NODE_ENV=production
       - SERVER_PORT=3002
+      - DOCLING_HOST=docling-ingestion
+      - DOCLING_PORT=8002
     volumes:
       - chat-data:/app/data
     networks:
       - agent
+    depends_on:
+      - docling-ingestion
+    restart: unless-stopped
+
+  docling-ingestion:
+    image: docling-ingestion:${DOCLING_VERSION:-0.1.0}
+    build:
+      context: ../docling_ingestion
+      dockerfile: build/Dockerfile
+    env_file:
+      - .env
+    environment:
+      WEAVIATE_HOST: ${WEAVIATE_HOST:-weaviate}
+      WEAVIATE_HTTP_PORT: ${WEAVIATE_HTTP_PORT:-8081}
+      WEAVIATE_GRPC_PORT: ${WEAVIATE_GRPC_PORT:-50051}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-mpnet-base-v2}
+      USE_CUDA: ${USE_CUDA:-true}
+      DOCLING_MODELS_PATH: /root/.cache/docling/models
+      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-seaweedfs:8333}
+      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
+      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
+      SEAWEEDFS_SECURE: ${SEAWEEDFS_SECURE:-false}
+      SEAWEEDFS_BUCKET: ${SEAWEEDFS_BUCKET:-media}
+      SEAWEEDFS_PRESIGN_EXPIRY: ${SEAWEEDFS_PRESIGN_EXPIRY:-3600}
+      SEAWEEDFS_EXTERNAL_ENDPOINT: ${SEAWEEDFS_EXTERNAL_ENDPOINT:-}
+    networks:
+      - agent
+    ports:
+      - "8002:8002"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      weaviate:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_started
     restart: unless-stopped
 
   multimodal-deepagent:
@@ -28,15 +71,20 @@ services:
     env_file:
       - .env
     environment:
-      MCP_SERVER_URL: http://research-mcp-server-1:8000
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_SECURE: ${MINIO_SECURE:-false}
       MINIO_BUCKET: ${MINIO_BUCKET:-data}
-      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-}
-      MINIO_PRESIGN_EXPIRY: ${MINIO_PRESIGN_EXPIRY:-3600}
+      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-seaweedfs:8333}
+      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
+      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
+      SEAWEEDFS_SECURE: ${SEAWEEDFS_SECURE:-false}
+      SEAWEEDFS_BUCKET: ${SEAWEEDFS_BUCKET:-media}
+      SEAWEEDFS_EXTERNAL_ENDPOINT: ${SEAWEEDFS_EXTERNAL_ENDPOINT:-}
+      SEAWEEDFS_PRESIGN_EXPIRY: ${SEAWEEDFS_PRESIGN_EXPIRY:-3600}
       MAX_VIDEO_FRAMES: ${MAX_VIDEO_FRAMES:-8}
+      IMAGE_MODE: ${IMAGE_MODE:-base64}
     networks:
       - agent
     stdin_open: true
@@ -46,7 +94,7 @@ services:
     ports:
       - "10010:10010"
     depends_on:
-      - minio
+      - seaweedfs
       - mcp-server
     command: ["uv", "run", "python", "src/main.py", "--host", "0.0.0.0", "--port", "10010"]
 
@@ -71,16 +119,85 @@ services:
       timeout: 5s
       retries: 5
 
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs
+    networks:
+      - agent
+    ports:
+      - "${SEAWEEDFS_MASTER_PORT:-9333}:9333"   # master
+      - "${SEAWEEDFS_VOLUME_PORT:-8080}:8080"   # volume server
+      - "${SEAWEEDFS_FILER_PORT:-8888}:8888"    # filer HTTP
+      - "${SEAWEEDFS_S3_PORT:-8333}:8333"       # S3-compatible API
+    volumes:
+      - seaweedfs_data:/data
+      - ../seaweedfs:/etc/seaweedfs:ro   # s3.conf credentials config
+    # Single-process "server" mode starts master + volume + filer + S3 gateway.
+    # -s3.config supplies static credentials so boto3/AWS SDK sigv4 auth works.
+    command: >
+      server
+      -s3
+      -s3.port=8333
+      -s3.config=/etc/seaweedfs/s3.conf
+      -dir=/data
+      -ip=seaweedfs
+      -master.volumeSizeLimitMB=1024
+    # No healthcheck — the SeaweedFS image ships without shell utilities so no
+    # probe command is available. Dependents use service_started and rely on
+    # application-level S3 retries to handle the brief window before the S3
+    # gateway finishes binding (typically < 5 s after container start).
+    restart: unless-stopped
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:${WEAVIATE_VERSION:-1.31.2}
+    container_name: weaviate
+    networks:
+      - agent
+    ports:
+      - "${WEAVIATE_HTTP_PORT:-8081}:8081"
+      - "${WEAVIATE_GRPC_PORT:-50051}:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_API_BASED_MODULES: 'true'
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    command: --host 0.0.0.0 --port 8081 --scheme http
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
   mcp-server:
     image: duckduckgo-mcp-tool:${MCP_SERVER_VERSION}
     env_file:
       - .env
+    environment:
+      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-seaweedfs:8333}
+      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
+      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
+      SEAWEEDFS_SECURE: ${SEAWEEDFS_SECURE:-false}
+      SEAWEEDFS_BUCKET: ${SEAWEEDFS_BUCKET:-media}
+      SEAWEEDFS_PRESIGN_EXPIRY: ${SEAWEEDFS_PRESIGN_EXPIRY:-3600}
+      WEAVIATE_HOST: ${WEAVIATE_HOST:-weaviate}
+      WEAVIATE_HTTP_PORT: ${WEAVIATE_HTTP_PORT:-8081}
+      WEAVIATE_GRPC_PORT: ${WEAVIATE_GRPC_PORT:-50051}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-mpnet-base-v2}
     networks:
       - agent
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - ../mcp_tools/src:/app/src
+    depends_on:
+      - seaweedfs
+      - weaviate
   
   phoenix:
     image: arizephoenix/phoenix:${PHOENIX_VERSION}
@@ -96,4 +213,6 @@ services:
 
 volumes:
   minio-data:
+  seaweedfs_data:
+  weaviate_data:
   chat-data:

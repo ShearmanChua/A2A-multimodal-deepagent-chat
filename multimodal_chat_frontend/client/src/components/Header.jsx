@@ -1,4 +1,4 @@
-import { Bot, Users, PlusCircle, MessageSquare, ArrowLeft } from "lucide-react";
+import { Bot, Users, PlusCircle, MessageSquare, ArrowLeft, FolderInput, SearchIcon, Loader2, Settings } from "lucide-react";
 
 /**
  * Header component with navigation tabs.
@@ -8,10 +8,14 @@ export default function Header({
   onTabChange,
   selectedAgent,
   onBackToAgents,
+  runningJobCount = 0,
 }) {
   const tabs = [
-    { id: "agents", label: "Agents", icon: Users },
-    { id: "register", label: "Register Agent", icon: PlusCircle },
+    { id: "agents",   label: "Agents",           icon: Users },
+    { id: "register", label: "Register Agent",   icon: PlusCircle },
+    { id: "ingest",   label: "Ingest Documents", icon: FolderInput },
+    { id: "search",   label: "Search",           icon: SearchIcon },
+    { id: "settings", label: "Settings",         icon: Settings },
   ];
 
   return (
@@ -52,7 +56,7 @@ export default function Header({
                 <button
                   key={tab.id}
                   onClick={() => onTabChange(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  className={`relative flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
                     isActive
                       ? "bg-blue-600 text-white"
                       : "text-gray-300 hover:text-white hover:bg-gray-700"
@@ -60,6 +64,12 @@ export default function Header({
                 >
                   <Icon className="w-4 h-4" />
                   {tab.label}
+                  {tab.id === "ingest" && runningJobCount > 0 && (
+                    <span className="flex items-center gap-0.5 ml-0.5 px-1.5 py-0.5 bg-blue-500 text-white text-xs rounded-full leading-none">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      {runningJobCount}
+                    </span>
+                  )}
                 </button>
               );
             })

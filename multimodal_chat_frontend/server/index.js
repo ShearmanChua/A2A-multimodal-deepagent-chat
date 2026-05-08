@@ -965,6 +965,40 @@ app.post(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Docling ingestion proxy — streams SSE from the docling-ingestion service
+// ---------------------------------------------------------------------------
+
+const http = require("http");
+const DOCLING_HOST = process.env.DOCLING_HOST || "localhost";
+const DOCLING_PORT = parseInt(process.env.DOCLING_PORT || "8002", 10);
+
+// Match /ingest and all sub-paths (/ingest/collections, /ingest/search, …).
+// req.url retains the full path so FastAPI receives the same URL the browser sent.
+app.all(/^\/ingest/, (req, res) => {
+  const options = {
+    hostname: DOCLING_HOST,
+    port: DOCLING_PORT,
+    path: req.url,   // e.g. /ingest, /ingest/collections, /ingest/search?q=…
+    method: req.method,
+    headers: { ...req.headers, host: `${DOCLING_HOST}:${DOCLING_PORT}` },
+  };
+
+  const proxy = http.request(options, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    proxyRes.pipe(res, { end: true });
+  });
+
+  proxy.on("error", (err) => {
+    console.error("Docling proxy error:", err.message);
+    if (!res.headersSent) {
+      res.status(502).json({ error: "Docling ingestion service unavailable" });
+    }
+  });
+
+  req.pipe(proxy, { end: true });
+});
+
 // Catch-all for SPA in production
 if (process.env.NODE_ENV === "production") {
   app.get("*", (req, res) => {

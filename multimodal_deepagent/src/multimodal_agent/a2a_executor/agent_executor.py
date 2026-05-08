@@ -2,7 +2,7 @@
 A2A AgentExecutor for the Multimodal DeepAgent.
 
 Handles incoming A2A requests, extracts text, system prompt, multiple images,
-and one video from message parts, delegates to the MultimodalAgent, and
+or one video from message parts, delegates to the MultimodalAgent, and
 streams status updates / artifacts back.
 
 Each streaming event carries structured ``metadata`` on both the
@@ -45,7 +45,7 @@ from a2a.types import (
 from a2a.utils import new_task
 from a2a.utils.errors import ServerError
 
-from multimodal_agent.agent import MultimodalAgent
+from multimodal_agent.agent.agent import MultimodalAgent
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ class _ExtractedParts:
         self.query: str = ""
         self.image_paths: list[str] = []
         self.image_b64s: list[str] = []
+        self.image_urls: list[str] = []   # web-served images (http/https)
         self.video_path: str | None = None
         self.video_b64: str | None = None
 
@@ -139,6 +140,7 @@ class MultimodalAgentExecutor(AgentExecutor):
                 system_prompt=parts.system_prompt,
                 image_paths=parts.image_paths if parts.image_paths else None,
                 image_b64s=parts.image_b64s if parts.image_b64s else None,
+                image_urls=parts.image_urls if parts.image_urls else None,
                 video_path=parts.video_path,
                 video_b64=parts.video_b64,
             ):
@@ -367,7 +369,7 @@ class MultimodalAgentExecutor(AgentExecutor):
             uri = getattr(file_obj, "uri", "") or ""
             if uri:
                 suffix = Path(uri.split("?")[0]).suffix.lower()
-                from multimodal_agent.agent import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
+                from multimodal_agent.configs.config import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
                 is_video = suffix in VIDEO_EXTENSIONS
                 is_image = suffix in IMAGE_EXTENSIONS
 
@@ -392,7 +394,17 @@ class MultimodalAgentExecutor(AgentExecutor):
                 # data URL — extract base64
                 if "," in uri:
                     file_b64 = uri.split(",", 1)[1]
-            # else: external URL — could be passed as text, but skip for now
+            elif uri.startswith("http://") or uri.startswith("https://"):
+                # Web-served image — pass URL directly to the agent
+                if is_image or is_video:
+                    if is_image:
+                        result.image_urls.append(uri)
+                    else:
+                        logger.warning("Web-served video URLs are not supported; skipping %s", uri)
+                else:
+                    # Unknown type, treat as image
+                    result.image_urls.append(uri)
+                return
 
         # Route to the appropriate list
         if is_video:
