@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .chunker import chunk_markdown
 from .converter import convert_to_markdown
 from .embedder import get_embedder
-from .seaweedfs_client import delete_all_objects, seaweedfs_configured, upload_document_image
+from .seaweedfs_client import delete_all_objects, get_presigned_url_from_path, seaweedfs_configured, upload_document_image
 from .weaviate_client import delete_all_collections, list_collections, sanitize_collection_name, search_collection, upload_chunks
 
 logging.basicConfig(
@@ -154,6 +154,21 @@ async def search_documents(
     results = await loop.run_in_executor(
         None, search_collection, collection, vector, query, limit, alpha
     )
+    # Convert stored seaweedfs:// paths to fresh presigned URLs for the frontend
+    if seaweedfs_configured():
+        for chunk in results:
+            props = chunk.get("properties", {})
+            raw_images = props.get("images") or []
+            resolved = []
+            for ref in raw_images:
+                if isinstance(ref, str) and ref.startswith("seaweedfs://"):
+                    try:
+                        resolved.append(get_presigned_url_from_path(ref))
+                    except Exception:
+                        resolved.append(ref)
+                else:
+                    resolved.append(ref)
+            props["images"] = resolved
     return {"collection": collection, "query": query, "count": len(results), "results": results}
 
 

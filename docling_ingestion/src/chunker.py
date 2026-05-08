@@ -5,7 +5,7 @@ from pathlib import Path
 MAX_CHUNK_CHARS = 3500
 MIN_CONTENT_LINES = 2  # chunks with fewer non-empty lines are dropped
 
-_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
+_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(((?:https?|seaweedfs)://[^)]+)\)")
 
 # Split strategies applied in priority order.  Each is tried in sequence;
 # the first one that yields > 1 part is used.  If none splits the text the

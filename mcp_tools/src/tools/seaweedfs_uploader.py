@@ -17,6 +17,7 @@ Configuration via environment variables:
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
@@ -141,3 +142,46 @@ def upload_image_bytes(
     unique = uuid.uuid4().hex[:8]
     object_key = f"{prefix}/{ts}_{unique}.{ext}"
     return upload_bytes(data, object_key, content_type=content_type, bucket=bucket)
+
+
+def _parse_seaweedfs_path(path: str) -> tuple[str, str]:
+    """Parse a seaweedfs://bucket/key path into (bucket, key)."""
+    without_scheme = path.removeprefix("seaweedfs://")
+    bucket, _, key = without_scheme.partition("/")
+    return bucket, key
+
+
+def get_presigned_url(path: str, expiry: int | None = None) -> str:
+    """Generate a presigned GET URL for a seaweedfs:// path reference.
+
+    Args:
+        path: seaweedfs:// path, e.g. ``seaweedfs://media/docling/doc/123.png``
+        expiry: URL validity in seconds; defaults to SEAWEEDFS_PRESIGN_EXPIRY env var.
+    """
+    bucket, key = _parse_seaweedfs_path(path)
+    expiry = expiry or _presign_expiry()
+    url = _get_presign_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expiry,
+    )
+    logger.info("Generated presigned URL for %s (expiry=%ds)", path, expiry)
+    return url
+
+
+def get_image_base64(path: str) -> str:
+    """Download an image from SeaweedFS and return it as a base64-encoded data URL.
+
+    Args:
+        path: seaweedfs:// path, e.g. ``seaweedfs://media/docling/doc/123.png``
+
+    Returns:
+        A data URL string: ``data:image/png;base64,...``
+    """
+    bucket, key = _parse_seaweedfs_path(path)
+    response = _get_s3_client().get_object(Bucket=bucket, Key=key)
+    img_bytes = response["Body"].read()
+    content_type = response.get("ContentType", "image/png")
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    logger.info("Retrieved image from %s (%d bytes)", path, len(img_bytes))
+    return f"data:{content_type};base64,{b64}"

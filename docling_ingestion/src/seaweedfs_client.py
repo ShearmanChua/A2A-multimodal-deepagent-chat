@@ -84,9 +84,8 @@ def upload_document_image(
     ext: str = "png",
     source_stem: str = "doc",
 ) -> str:
-    """Upload an image extracted from a document and return a pre-signed GET URL."""
+    """Upload an image extracted from a document and return a seaweedfs:// path reference."""
     bucket = os.environ.get("SEAWEEDFS_BUCKET", "media")
-    expiry = int(os.environ.get("SEAWEEDFS_PRESIGN_EXPIRY", "3600"))
 
     _ensure_bucket(bucket)
 
@@ -103,13 +102,29 @@ def upload_document_image(
         ContentType=content_type,
     )
 
-    url = _get_presign_client().generate_presigned_url(
+    path = f"seaweedfs://{bucket}/{key}"
+    logger.info("Uploaded document image → %s (%d bytes)", path, len(img_bytes))
+    return path
+
+
+def get_presigned_url_from_path(path: str) -> str:
+    """Generate a presigned GET URL for a seaweedfs:// path reference."""
+    without_scheme = path.removeprefix("seaweedfs://")
+    bucket, _, key = without_scheme.partition("/")
+    expiry = int(os.environ.get("SEAWEEDFS_PRESIGN_EXPIRY", "3600"))
+    return _get_presign_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},
         ExpiresIn=expiry,
     )
-    logger.info("Uploaded document image → %s/%s (%d bytes)", bucket, key, len(img_bytes))
-    return url
+
+
+def get_image_bytes_from_path(path: str) -> bytes:
+    """Download image bytes from a seaweedfs:// path reference."""
+    without_scheme = path.removeprefix("seaweedfs://")
+    bucket, _, key = without_scheme.partition("/")
+    response = _get_s3_client().get_object(Bucket=bucket, Key=key)
+    return response["Body"].read()
 
 
 def delete_all_objects() -> int:
