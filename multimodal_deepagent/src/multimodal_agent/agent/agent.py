@@ -15,7 +15,6 @@ from langchain_openai import ChatOpenAI
 
 from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, seaweedfs_available
 from multimodal_agent.agent.content_builders import build_content_base64, build_content_seaweedfs
-from multimodal_agent.agent.media import sample_video_frames_b64
 from multimodal_agent.agent.middleware import parse_messages_before_model
 from multimodal_agent.configs.seaweedfs_uploader import upload_base64, upload_file
 from multimodal_agent.agent.tools import ResponseFormat, wrap_tools_with_error_handling
@@ -193,6 +192,7 @@ class MultimodalAgent:
         image_urls: list[str] | None = None,
         video_path: str | None = None,
         video_b64: str | None = None,
+        video_urls: list[str] | None = None,
     ) -> AsyncIterable[dict[str, Any]]:
         """Stream agent responses for a user query with optional media.
 
@@ -203,9 +203,9 @@ class MultimodalAgent:
         await self._ensure_initialized()
 
         all_image_b64s: list[str] = []
-        uploaded_urls: list[str] = []
-        video_frame_b64s: list[str] = []
-        video_frame_urls: list[str] = []
+        uploaded_image_urls: list[str] = []
+        uploaded_video_urls: list[str] = []
+        inline_video_b64: str | None = None
         swfs = seaweedfs_available()
 
         for path in image_paths or []:
@@ -213,39 +213,40 @@ class MultimodalAgent:
                 b64 = base64.b64encode(f.read()).decode()
             all_image_b64s.append(b64)
             if swfs:
-                uploaded_urls.append(self._upload_image_file(path))
+                uploaded_image_urls.append(self._upload_image_file(path))
 
         for b64 in image_b64s or []:
             all_image_b64s.append(b64)
             if swfs:
-                uploaded_urls.append(self._upload_image_b64(b64))
+                uploaded_image_urls.append(self._upload_image_b64(b64))
 
         if video_path:
-            video_frame_b64s = sample_video_frames_b64(video_path)
+            with open(video_path, "rb") as f:
+                inline_video_b64 = base64.b64encode(f.read()).decode()
             if swfs:
-                for fb64 in video_frame_b64s:
-                    video_frame_urls.append(
-                        upload_base64(fb64, ext="jpg", prefix="a2a/video_frames")
-                    )
-        elif video_b64 and swfs:
-            video_frame_urls = [self._upload_video_b64(video_b64)]
+                uploaded_video_urls.append(upload_file(video_path, prefix="a2a/videos"))
+        elif video_b64:
+            inline_video_b64 = video_b64
+            if swfs:
+                uploaded_video_urls.append(self._upload_video_b64(video_b64))
 
-        # Merge uploaded URLs with any web-served URLs passed in directly
-        all_image_urls = uploaded_urls + list(image_urls or [])
+        all_image_urls = uploaded_image_urls + list(image_urls or [])
+        all_video_urls = uploaded_video_urls + list(video_urls or [])
 
         use_swfs_urls = IMAGE_MODE == "seaweedfs" and swfs
         if use_swfs_urls:
             content = build_content_seaweedfs(
                 query,
                 image_urls=all_image_urls or None,
-                video_frame_urls=video_frame_urls or None,
+                video_urls=all_video_urls or None,
             )
         else:
             content = build_content_base64(
                 query,
                 image_b64s=all_image_b64s or None,
-                video_frame_b64s=video_frame_b64s or None,
                 image_urls=all_image_urls or None,
+                video_b64=inline_video_b64,
+                video_urls=all_video_urls or None,
             )
 
         messages: list = []
@@ -257,6 +258,7 @@ class MultimodalAgent:
         config = {"configurable": {"thread_id": context_id}, "recursion_limit": 100}
         processed_ids: set[str] = set()
 
+        # Process the snapshot
         async def _process_snapshot(data: dict):
             message = data["messages"][-1]
             msg_id = getattr(message, "id", None)
@@ -329,6 +331,7 @@ class MultimodalAgent:
                     "event_type": "final_response",
                 }
 
+        # Run the agent
         async for _, data in self.agent.astream(
             input_payload, config, stream_mode="values", subgraphs=True
         ):

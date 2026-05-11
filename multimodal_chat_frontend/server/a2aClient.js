@@ -81,14 +81,6 @@ class A2AClient {
   buildSendMessageRequest({ text, systemPrompt, images, video, contextId }) {
     const parts = [];
 
-    // System prompt convention: TextPart prefixed with [system]
-    if (systemPrompt) {
-      parts.push({
-        kind: "text",
-        text: `[system] ${systemPrompt}`,
-      });
-    }
-
     // User text
     parts.push({
       kind: "text",
@@ -132,6 +124,7 @@ class A2AClient {
           messageId,
           ...(contextId ? { contextId } : {}),
         },
+        ...(systemPrompt ? { metadata: { system_prompt: systemPrompt } } : {}),
       },
     };
   }

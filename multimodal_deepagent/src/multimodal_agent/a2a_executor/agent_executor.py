@@ -1,8 +1,8 @@
 """
 A2A AgentExecutor for the Multimodal DeepAgent.
 
-Handles incoming A2A requests, extracts text, system prompt, multiple images,
-or one video from message parts, delegates to the MultimodalAgent, and
+Handles incoming A2A requests, extracts text, system prompt, images,
+or ONE video from message parts, delegates to the MultimodalAgent, and
 streams status updates / artifacts back.
 
 Each streaming event carries structured ``metadata`` on both the
@@ -22,7 +22,6 @@ Metadata schema (``message.metadata`` / ``update_status`` *metadata*):
 
 from __future__ import annotations
 
-import base64
 import logging
 import uuid
 from pathlib import Path
@@ -33,6 +32,8 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskStore, TaskUpdater
 from a2a.types import (
     FilePart,
+    FileWithBytes,
+    FileWithUri,
     InternalError,
     InvalidParamsError,
     Message,
@@ -87,9 +88,10 @@ class _ExtractedParts:
         self.query: str = ""
         self.image_paths: list[str] = []
         self.image_b64s: list[str] = []
-        self.image_urls: list[str] = []   # web-served images (http/https)
+        self.image_urls: list[str] = []
         self.video_path: str | None = None
         self.video_b64: str | None = None
+        self.video_urls: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +103,11 @@ class MultimodalAgentExecutor(AgentExecutor):
     """A2A executor that bridges the protocol to the MultimodalAgent.
 
     Supports:
-    - Optional system prompt (first TextPart starting with ``[system]`` or
-      a dedicated metadata field).
-    - Multiple images (each as a FilePart with image/* MIME type).
-    - One video (first FilePart with video/* MIME type).
+    - Optional system prompt via ``MessageSendParams.metadata["system_prompt"]``.
+    - Multiple images (each as a FilePart with image/* MIME type, or http/https URI).
+    - One inline video (first FilePart with video/* MIME type, as bytes or file path).
+    - Multiple video URLs (http/https URIs with video/* MIME type — passed directly
+      to the model without frame sampling).
     """
 
     def __init__(self, task_store: TaskStore | None = None):
@@ -143,6 +146,7 @@ class MultimodalAgentExecutor(AgentExecutor):
                 image_urls=parts.image_urls if parts.image_urls else None,
                 video_path=parts.video_path,
                 video_b64=parts.video_b64,
+                video_urls=parts.video_urls if parts.video_urls else None,
             ):
                 is_task_complete = item["is_task_complete"]
                 require_user_input = item["require_user_input"]
@@ -290,11 +294,8 @@ class MultimodalAgentExecutor(AgentExecutor):
     def _extract_parts(self, context: RequestContext) -> _ExtractedParts:
         """Extract system prompt, text query, images, and video from A2A message.
 
-        Convention for system prompt:
-        - A TextPart whose text starts with ``[system]`` (case-insensitive) is
-          treated as the system prompt.  The ``[system]`` prefix is stripped.
-        - Alternatively, if the message metadata contains a ``system_prompt``
-          key, that value is used.
+        System prompt:
+        - Read from ``MessageSendParams.metadata["system_prompt"]``.
 
         Images:
         - All FileParts with ``image/*`` MIME types are collected (multiple
@@ -315,11 +316,10 @@ class MultimodalAgentExecutor(AgentExecutor):
         if user_input:
             result.query = user_input
 
-        # Check message metadata for system_prompt
-        if context.message and hasattr(context.message, "metadata"):
-            meta = context.message.metadata
-            if isinstance(meta, dict) and "system_prompt" in meta:
-                result.system_prompt = str(meta["system_prompt"])
+        # MessageSendParams.metadata is the canonical location for system_prompt
+        params_meta = context.metadata  # dict[str, Any], never None
+        if "system_prompt" in params_meta:
+            result.system_prompt = str(params_meta["system_prompt"])
 
         logger.info("context dict: %s", context.__dict__)
 
@@ -333,21 +333,11 @@ class MultimodalAgentExecutor(AgentExecutor):
                     part = part.root
 
                 if isinstance(part, TextPart):
-                    text = part.text or ""
-
-                    # Check for [system] prefix
-                    if text.strip().lower().startswith("[system]"):
-                        # Extract system prompt (strip the prefix)
-                        system_text = text.strip()[len("[system]"):].strip()
-                        if system_text:
-                            result.system_prompt = system_text
-                    else:
-                        text_parts.append(text)
-
+                    text_parts.append(part.text or "")
                 elif isinstance(part, FilePart):
                     self._process_file_part(part, result)
 
-            # Combine all non-system text parts as the query
+            # Combine all text parts as the query
             if text_parts:
                 result.query = "\n".join(text_parts)
 
@@ -355,60 +345,57 @@ class MultimodalAgentExecutor(AgentExecutor):
 
     def _process_file_part(self, part: FilePart, result: _ExtractedParts) -> None:
         """Process a single FilePart and add it to the result container."""
-        file_obj = getattr(part, "file", None)
-        if not file_obj:
-            return
-
-        # Determine MIME type
-        mime = getattr(file_obj, "mime_type", "") or getattr(file_obj, "mimeType", "") or ""
-        is_video = mime.startswith("video/")
+        file = part.file
+        mime = file.mime_type or ""
         is_image = mime.startswith("image/")
+        is_video = mime.startswith("video/")
 
-        # If no MIME, try to guess from URI
-        if not is_video and not is_image:
-            uri = getattr(file_obj, "uri", "") or ""
-            if uri:
+        if isinstance(file, FileWithBytes):
+            # file.bytes is already a base64-encoded string per the A2A spec
+            self._route_media(file.bytes, None, is_image, is_video, mime, result)
+
+        elif isinstance(file, FileWithUri):
+            uri = file.uri
+
+            # Guess type from extension when MIME is absent
+            if not is_image and not is_video:
+                from multimodal_agent.configs.config import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
                 suffix = Path(uri.split("?")[0]).suffix.lower()
-                from multimodal_agent.configs.config import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS
-                is_video = suffix in VIDEO_EXTENSIONS
                 is_image = suffix in IMAGE_EXTENSIONS
+                is_video = suffix in VIDEO_EXTENSIONS
 
-        # Extract data (inline bytes or URI)
-        file_b64: str | None = None
-        file_path: str | None = None
-
-        if hasattr(file_obj, "bytes") and file_obj.bytes:
-            raw = file_obj.bytes
-            if isinstance(raw, bytes):
-                file_b64 = base64.b64encode(raw).decode()
-            else:
-                file_b64 = str(raw)
-
-        elif hasattr(file_obj, "uri") and file_obj.uri:
-            uri = file_obj.uri
-            if uri.startswith("file://"):
-                file_path = uri[7:]
-            elif uri.startswith("/"):
-                file_path = uri
-            elif uri.startswith("data:"):
-                # data URL — extract base64
-                if "," in uri:
-                    file_b64 = uri.split(",", 1)[1]
-            elif uri.startswith("http://") or uri.startswith("https://"):
-                # Web-served image — pass URL directly to the agent
-                if is_image or is_video:
-                    if is_image:
-                        result.image_urls.append(uri)
-                    else:
-                        logger.warning("Web-served video URLs are not supported; skipping %s", uri)
+            if uri.startswith(("http://", "https://")):
+                if is_video:
+                    result.video_urls.append(uri)
                 else:
-                    # Unknown type, treat as image
                     result.image_urls.append(uri)
                 return
 
-        # Route to the appropriate list
+            if uri.startswith("data:") and "," in uri:
+                self._route_media(uri.split(",", 1)[1], None, is_image, is_video, mime, result)
+                return
+
+            if uri.startswith("file://"):
+                file_path = uri[len("file://"):]
+            elif uri.startswith("/"):
+                file_path = uri
+            else:
+                logger.warning("Unrecognised URI scheme in FilePart: %s", uri[:80])
+                return
+
+            self._route_media(None, file_path, is_image, is_video, mime, result)
+
+    def _route_media(
+        self,
+        file_b64: str | None,
+        file_path: str | None,
+        is_image: bool,
+        is_video: bool,
+        mime: str,
+        result: _ExtractedParts,
+    ) -> None:
+        """Route an extracted file to the correct bucket on *result*."""
         if is_video:
-            # Only accept the first video
             if result.video_path is None and result.video_b64 is None:
                 if file_path:
                     result.video_path = file_path
@@ -418,7 +405,6 @@ class MultimodalAgentExecutor(AgentExecutor):
                     logger.warning("Video FilePart has no extractable data")
             else:
                 logger.warning("Multiple videos provided; only the first is used")
-
         elif is_image:
             if file_path:
                 result.image_paths.append(file_path)
@@ -426,9 +412,7 @@ class MultimodalAgentExecutor(AgentExecutor):
                 result.image_b64s.append(file_b64)
             else:
                 logger.warning("Image FilePart has no extractable data")
-
         else:
-            # Unknown type — try as image
             logger.info("Unknown MIME '%s' — treating as image", mime)
             if file_path:
                 result.image_paths.append(file_path)

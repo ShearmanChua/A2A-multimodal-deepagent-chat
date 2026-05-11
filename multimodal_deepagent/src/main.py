@@ -32,8 +32,10 @@ logger = logging.getLogger(__name__)
 def main(host: str, port: int) -> None:
     """Start the Multimodal DeepAgent A2A server."""
     try:
-        if not os.getenv("MODEL_NAME") and not os.getenv("TOOL_LLM_NAME"):
-            logger.warning("Neither MODEL_NAME nor TOOL_LLM_NAME is set — falling back to 'gpt-4o'.")
+        if not os.getenv("MODEL_NAME"):
+            logger.warning(
+                "MODEL_NAME not set — falling back to 'gpt-4o'."
+            )
 
         skills = [
             AgentSkill(
@@ -45,34 +47,20 @@ def main(host: str, port: int) -> None:
                     "images are uploaded to SeaweedFS and pre-signed URLs are shared with "
                     "MCP tools for multimodal retrieval."
                 ),
-                tags=["rag", "weaviate", "vector search", "multimodal", "image"],
+                tags=["RAG", "vector search", "multimodal"],
                 examples=[
                     "What documents mention transformer architectures?",
                     "Find images similar to the one I uploaded.",
                     "Search the knowledge base for information about this diagram.",
                 ],
-            ),
-            AgentSkill(
-                id="media_management",
-                name="Media Management",
-                description=(
-                    "Upload images and videos to SeaweedFS object storage and browse "
-                    "objects stored in MinIO. Generates pre-signed URLs for sharing "
-                    "and MCP tool access."
-                ),
-                tags=["seaweedfs", "minio", "storage", "upload", "pre-signed URL"],
-                examples=[
-                    "Upload this image and give me the URL.",
-                    "List objects in the MinIO bucket.",
-                ],
-            ),
+            )
         ]
 
         agent_card = AgentCard(
             name="Multimodal DeepAgent",
             description=(
-                "A multimodal RAG agent that processes text and images. "
-                "Media is uploaded to SeaweedFS and pre-signed URLs are used "
+                "A RAG agent that processes text and images from users. "
+                "Imaages are uploaded to SeaweedFS and pre-signed URLs are used "
                 "for both the vision model and MCP tools."
             ),
             url=os.environ.get("A2A_AGENT_URL", "http://localhost:10010"),
@@ -95,14 +83,22 @@ def main(host: str, port: int) -> None:
             ),
         )
 
-        logger.info("Starting Multimodal DeepAgent on %s:%d", host, port)
+        logger.info("Starting RAG DeepAgent on %s:%d", host, port)
         logger.info(
             "SeaweedFS: %s | MCP: %s",
             os.environ.get("SEAWEEDFS_ENDPOINT", "not configured"),
             os.environ.get("MCP_SERVER_URL", "http://research-mcp-server-1:8000"),
         )
 
-        uvicorn.run(A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler).build(), host=host, port=port)
+        # Run the A2A server
+        uvicorn.run(
+            A2AStarletteApplication(
+                agent_card=agent_card,
+                http_handler=request_handler
+            ).build(),
+            host=host,
+            port=port
+        )
 
     except Exception as e:
         logger.error("Server startup failed: %s", e, exc_info=True)
