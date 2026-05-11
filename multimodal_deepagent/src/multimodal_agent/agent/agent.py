@@ -16,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, seaweedfs_available
 from multimodal_agent.agent.content_builders import build_content_base64, build_content_seaweedfs
 from multimodal_agent.agent.middleware import parse_messages_before_model
-from multimodal_agent.configs.seaweedfs_uploader import upload_base64, upload_file
+from multimodal_agent.utils.seaweedfs_uploader import upload_base64, upload_file
 from multimodal_agent.agent.tools import ResponseFormat, wrap_tools_with_error_handling
 
 # ── Optional dependencies ─────────────────────────────────────────────────────
