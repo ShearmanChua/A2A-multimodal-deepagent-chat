@@ -5,7 +5,7 @@ from multimodal_agent.configs.config import (
     MCP_SERVER_URL,
     MEMORIES_DIR,
     VIDEO_EXTENSIONS,
-    seaweedfs_available,
+    object_store_available,
 )
 
 __all__ = [
@@ -15,5 +15,5 @@ __all__ = [
     "MCP_SERVER_URL",
     "MEMORIES_DIR",
     "VIDEO_EXTENSIONS",
-    "seaweedfs_available",
+    "object_store_available",
 ]

@@ -4,9 +4,9 @@ from tools.weaviate_store import (
     get_collection_schema as weaviate_get_collection_schema,
     hybrid_query as weaviate_hybrid_query,
 )
-from tools.seaweedfs_uploader import (
-    get_presigned_url as swfs_get_presigned_url,
-    get_image_base64 as swfs_get_image_base64,
+from tools.object_store_uploader import (
+    get_presigned_url as obj_store_get_presigned_url,
+    get_image_base64 as obj_store_get_image_base64,
 )
 
 import logging
@@ -120,57 +120,57 @@ def query_weaviate(
 
 
 # ---------------------------------------------------------------------------
-# SeaweedFS image retrieval tools
+# Object store image retrieval tools
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
-    name="get_seaweedfs_presigned_url",
+    name="get_object_store_presigned_url",
     description=(
-        "Generate a short-lived presigned HTTP GET URL for an image stored in SeaweedFS. "
-        "Use this when you need to share or display an image referenced by a seaweedfs:// path "
+        "Generate a short-lived presigned HTTP GET URL for an image stored in the object store. "
+        "Use this when you need to share or display an image referenced by a objstore:// path "
         "found in a Weaviate chunk's 'images' list. "
         "The returned URL is valid for the configured expiry period (default 3600 s)."
     )
 )
-def get_seaweedfs_presigned_url(path: str, expiry: int | None = None) -> str:
+def get_object_store_presigned_url(path: str, expiry: int | None = None) -> str:
     """
-    Generate a presigned GET URL for a SeaweedFS object.
+    Generate a presigned GET URL for an object store path.
 
     Args:
-        path: seaweedfs:// path returned by query_weaviate, e.g.
-              ``seaweedfs://media/docling/doc/123_abc.png``
-        expiry: Optional URL validity in seconds (default: SEAWEEDFS_PRESIGN_EXPIRY env var).
+        path: objstore:// path returned by query_weaviate, e.g.
+              ``objstore://media/docling/doc/123_abc.png``
+        expiry: Optional URL validity in seconds (default: OBJECT_STORE_PRESIGN_EXPIRY env var).
 
     Returns:
         A presigned HTTPS/HTTP URL string.
     """
-    url = swfs_get_presigned_url(path, expiry)
+    url = obj_store_get_presigned_url(path, expiry)
     logger.info("Generated presigned URL for %s", path)
     return url
 
 
 @mcp.tool(
-    name="get_seaweedfs_image_base64",
+    name="get_object_store_image_base64",
     description=(
-        "Download an image from SeaweedFS and return it as a base64 data URL "
+        "Download an image from the object store and return it as a base64 data URL "
         "(data:image/png;base64,...). Use this when you need to analyse or describe "
-        "an image referenced by a seaweedfs:// path found in a Weaviate chunk's 'images' list. "
-        "Prefer this over get_seaweedfs_presigned_url when the image must be passed directly "
+        "an image referenced by a objstore:// path found in a Weaviate chunk's 'images' list. "
+        "Prefer this over get_object_store_presigned_url when the image must be passed directly "
         "to a vision model."
     )
 )
-def get_seaweedfs_image_base64(path: str) -> str:
+def get_object_store_image_base64(path: str) -> str:
     """
-    Download an image from SeaweedFS and return it as a base64 data URL.
+    Download an image from the object store and return it as a base64 data URL.
 
     Args:
-        path: seaweedfs:// path returned by query_weaviate, e.g.
-              ``seaweedfs://media/docling/doc/123_abc.png``
+        path: objstore:// path returned by query_weaviate, e.g.
+              ``objstore://media/docling/doc/123_abc.png``
 
     Returns:
         A data URL string: ``data:image/png;base64,...``
     """
-    data_url = swfs_get_image_base64(path)
+    data_url = obj_store_get_image_base64(path)
     logger.info("Retrieved base64 image for %s", path)
     return data_url
 

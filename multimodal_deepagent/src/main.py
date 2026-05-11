@@ -44,7 +44,7 @@ def main(host: str, port: int) -> None:
                 description=(
                     "Answer questions by searching Weaviate vector collections with hybrid "
                     "search (BM25 + vector similarity). Accepts text queries and images; "
-                    "images are uploaded to SeaweedFS and pre-signed URLs are shared with "
+                    "images are uploaded to object store and pre-signed URLs are shared with "
                     "MCP tools for multimodal retrieval."
                 ),
                 tags=["RAG", "vector search", "multimodal"],
@@ -60,7 +60,7 @@ def main(host: str, port: int) -> None:
             name="Multimodal DeepAgent",
             description=(
                 "A RAG agent that processes text and images from users. "
-                "Imaages are uploaded to SeaweedFS and pre-signed URLs are used "
+                "Imaages are uploaded to object store and pre-signed URLs are used "
                 "for both the vision model and MCP tools."
             ),
             url=os.environ.get("A2A_AGENT_URL", "http://localhost:10010"),
@@ -85,8 +85,8 @@ def main(host: str, port: int) -> None:
 
         logger.info("Starting RAG DeepAgent on %s:%d", host, port)
         logger.info(
-            "SeaweedFS: %s | MCP: %s",
-            os.environ.get("SEAWEEDFS_ENDPOINT", "not configured"),
+            "object store: %s | MCP: %s",
+            os.environ.get("OBJECT_STORE_ENDPOINT", "not configured"),
             os.environ.get("MCP_SERVER_URL", "http://research-mcp-server-1:8000"),
         )
 

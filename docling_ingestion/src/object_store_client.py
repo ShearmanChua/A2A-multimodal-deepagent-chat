@@ -1,15 +1,15 @@
 """
-SeaweedFS image uploader for the docling ingestion service.
-Mirrors the pattern used in mcp_tools/src/tools/seaweedfs_uploader.py.
+object store image uploader for the docling ingestion service.
+Mirrors the pattern used in mcp_tools/src/tools/object_store_uploader.py.
 
 Configuration via environment variables:
-    SEAWEEDFS_ENDPOINT          – e.g. "seaweedfs:8333"
-    SEAWEEDFS_ACCESS_KEY        – access key (default "")
-    SEAWEEDFS_SECRET_KEY        – secret key (default "")
-    SEAWEEDFS_SECURE            – "true" for HTTPS (default "false")
-    SEAWEEDFS_BUCKET            – bucket name (default "media")
-    SEAWEEDFS_PRESIGN_EXPIRY    – pre-signed URL expiry in seconds (default 3600)
-    SEAWEEDFS_EXTERNAL_ENDPOINT – external host for pre-signed URLs
+    OBJECT_STORE_ENDPOINT          – e.g. "seaweedfs:8333"
+    OBJECT_STORE_ACCESS_KEY        – access key (default "")
+    OBJECT_STORE_SECRET_KEY        – secret key (default "")
+    OBJECT_STORE_SECURE            – "true" for HTTPS (default "false")
+    OBJECT_STORE_BUCKET            – bucket name (default "media")
+    OBJECT_STORE_PRESIGN_EXPIRY    – pre-signed URL expiry in seconds (default 3600)
+    OBJECT_STORE_EXTERNAL_ENDPOINT – external host for pre-signed URLs
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import uuid
 import boto3
 from botocore.config import Config as BotoConfig
 
-logger = logging.getLogger("docling-ingestion.seaweedfs")
+logger = logging.getLogger("docling-ingestion.object_store")
 
 _s3_client = None
 _presign_client = None
@@ -33,12 +33,12 @@ def _get_s3_client():
     global _s3_client
     if _s3_client is not None:
         return _s3_client
-    endpoint = os.environ.get("SEAWEEDFS_ENDPOINT", "seaweedfs:8333")
-    access_key = os.environ.get("SEAWEEDFS_ACCESS_KEY", "")
-    secret_key = os.environ.get("SEAWEEDFS_SECRET_KEY", "")
-    secure = os.environ.get("SEAWEEDFS_SECURE", "false").lower() in ("1", "true", "yes")
+    endpoint = os.environ.get("OBJECT_STORE_ENDPOINT", "seaweedfs:8333")
+    access_key = os.environ.get("OBJECT_STORE_ACCESS_KEY", "")
+    secret_key = os.environ.get("OBJECT_STORE_SECRET_KEY", "")
+    secure = os.environ.get("OBJECT_STORE_SECURE", "false").lower() in ("1", "true", "yes")
     scheme = "https" if secure else "http"
-    logger.info("Connecting to SeaweedFS at %s://%s", scheme, endpoint)
+    logger.info("Connecting to object store at %s://%s", scheme, endpoint)
     _s3_client = boto3.client(
         "s3",
         endpoint_url=f"{scheme}://{endpoint}",
@@ -54,16 +54,16 @@ def _get_presign_client():
     global _presign_client
     if _presign_client is not None:
         return _presign_client
-    external = os.environ.get("SEAWEEDFS_EXTERNAL_ENDPOINT")
+    external = os.environ.get("OBJECT_STORE_EXTERNAL_ENDPOINT")
     if not external:
         return _get_s3_client()
-    secure = os.environ.get("SEAWEEDFS_SECURE", "false").lower() in ("1", "true", "yes")
+    secure = os.environ.get("OBJECT_STORE_SECURE", "false").lower() in ("1", "true", "yes")
     scheme = "https" if secure else "http"
     _presign_client = boto3.client(
         "s3",
         endpoint_url=f"{scheme}://{external}",
-        aws_access_key_id=os.environ.get("SEAWEEDFS_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("SEAWEEDFS_SECRET_KEY", ""),
+        aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", ""),
+        aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", ""),
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
     )
@@ -84,8 +84,8 @@ def upload_document_image(
     ext: str = "png",
     source_stem: str = "doc",
 ) -> str:
-    """Upload an image extracted from a document and return a seaweedfs:// path reference."""
-    bucket = os.environ.get("SEAWEEDFS_BUCKET", "media")
+    """Upload an image extracted from a document and return an objstore:// path reference."""
+    bucket = os.environ.get("OBJECT_STORE_BUCKET", "media")
 
     _ensure_bucket(bucket)
 
@@ -102,16 +102,16 @@ def upload_document_image(
         ContentType=content_type,
     )
 
-    path = f"seaweedfs://{bucket}/{key}"
+    path = f"objstore://{bucket}/{key}"
     logger.info("Uploaded document image → %s (%d bytes)", path, len(img_bytes))
     return path
 
 
 def get_presigned_url_from_path(path: str) -> str:
-    """Generate a presigned GET URL for a seaweedfs:// path reference."""
-    without_scheme = path.removeprefix("seaweedfs://")
+    """Generate a presigned GET URL for an objstore:// path reference."""
+    without_scheme = path.removeprefix("objstore://")
     bucket, _, key = without_scheme.partition("/")
-    expiry = int(os.environ.get("SEAWEEDFS_PRESIGN_EXPIRY", "3600"))
+    expiry = int(os.environ.get("OBJECT_STORE_PRESIGN_EXPIRY", "3600"))
     return _get_presign_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},
@@ -120,8 +120,8 @@ def get_presigned_url_from_path(path: str) -> str:
 
 
 def get_image_bytes_from_path(path: str) -> bytes:
-    """Download image bytes from a seaweedfs:// path reference."""
-    without_scheme = path.removeprefix("seaweedfs://")
+    """Download image bytes from an objstore:// path reference."""
+    without_scheme = path.removeprefix("objstore://")
     bucket, _, key = without_scheme.partition("/")
     response = _get_s3_client().get_object(Bucket=bucket, Key=key)
     return response["Body"].read()
@@ -129,10 +129,10 @@ def get_image_bytes_from_path(path: str) -> bytes:
 
 def delete_all_objects() -> int:
     """Delete every object in the configured bucket. Returns the count deleted."""
-    if not seaweedfs_configured():
+    if not object_store_configured():
         return 0
 
-    bucket = os.environ.get("SEAWEEDFS_BUCKET", "media")
+    bucket = os.environ.get("OBJECT_STORE_BUCKET", "media")
     client = _get_s3_client()
     deleted = 0
 
@@ -151,6 +151,6 @@ def delete_all_objects() -> int:
     return deleted
 
 
-def seaweedfs_configured() -> bool:
-    """Return True if SeaweedFS env vars are present enough to try uploading."""
-    return bool(os.environ.get("SEAWEEDFS_ENDPOINT"))
+def object_store_configured() -> bool:
+    """Return True if object store env vars are present enough to try uploading."""
+    return bool(os.environ.get("OBJECT_STORE_ENDPOINT"))

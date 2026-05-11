@@ -13,10 +13,10 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, seaweedfs_available
-from multimodal_agent.agent.content_builders import build_content_base64, build_content_seaweedfs
+from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, object_store_available
+from multimodal_agent.agent.content_builders import build_content_base64, build_content_object_store
 from multimodal_agent.agent.middleware import parse_messages_before_model
-from multimodal_agent.utils.seaweedfs_uploader import upload_base64, upload_file
+from multimodal_agent.utils.object_store_uploader import upload_base64, upload_file
 from multimodal_agent.agent.tools import ResponseFormat, wrap_tools_with_error_handling
 
 # ── Optional dependencies ─────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ class MultimodalAgent:
         uploaded_image_urls: list[str] = []
         uploaded_video_urls: list[str] = []
         inline_video_b64: str | None = None
-        swfs = seaweedfs_available()
+        swfs = object_store_available()
 
         for path in image_paths or []:
             with open(path, "rb") as f:
@@ -233,9 +233,9 @@ class MultimodalAgent:
         all_image_urls = uploaded_image_urls + list(image_urls or [])
         all_video_urls = uploaded_video_urls + list(video_urls or [])
 
-        use_swfs_urls = IMAGE_MODE == "seaweedfs" and swfs
+        use_swfs_urls = IMAGE_MODE == "object_store" and swfs
         if use_swfs_urls:
-            content = build_content_seaweedfs(
+            content = build_content_object_store(
                 query,
                 image_urls=all_image_urls or None,
                 video_urls=all_video_urls or None,

@@ -19,8 +19,8 @@ Answer the user's question by searching the Weaviate knowledge base.
    - Cite the `source_file` and `header_path` from each result's properties.
    - Quote or paraphrase directly from `content` when precise wording matters.
    - If images are present in a chunk's `images` list, retrieve and analyse them:
-     - Call `get_seaweedfs_image_base64` with the `seaweedfs://` path to get the image for vision analysis.
-     - Or call `get_seaweedfs_presigned_url` to obtain a URL you can reference in your response.
+     - Call `get_object_store_image_base64` with the `objstore://` path to get the image for vision analysis.
+     - Or call `get_object_store_presigned_url` to obtain a URL you can reference in your response.
 5. If no relevant results are found, say so clearly and suggest the user ingest the relevant documents first.
 
 ## Tool Reference
@@ -30,8 +30,8 @@ Answer the user's question by searching the Weaviate knowledge base.
 | `list_weaviate_collections` | — | `[{name, description, properties}]` |
 | `get_weaviate_collection_schema` | `collection_name` | `{name, description, properties, vectorizer}` |
 | `query_weaviate` | `collection_name, query, limit=10, alpha=0.5` | `[{properties, score, uuid}]` |
-| `get_seaweedfs_image_base64` | `path` (seaweedfs:// path) | `data:image/...;base64,...` |
-| `get_seaweedfs_presigned_url` | `path` (seaweedfs:// path), `expiry` (optional seconds) | presigned URL string |
+| `get_object_store_image_base64` | `path` (objstore:// path) | `data:image/...;base64,...` |
+| `get_object_store_presigned_url` | `path` (objstore:// path), `expiry` (optional seconds) | presigned URL string |
 
 ## Result Properties
 

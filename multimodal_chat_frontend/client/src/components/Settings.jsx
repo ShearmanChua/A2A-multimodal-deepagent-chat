@@ -33,7 +33,7 @@ export default function Settings() {
         collections: data.collections_deleted ?? [],
         objects: data.objects_deleted ?? 0,
         weaviateError: data.weaviate_error ?? null,
-        seaweedfsError: data.seaweedfs_error ?? null,
+        objectStoreError: data.object_store_error ?? null,
       });
     } catch (err) {
       setResult({ ok: false, error: err.message });
@@ -68,7 +68,7 @@ export default function Settings() {
           </li>
           <li className="flex items-center gap-2 text-sm text-gray-400">
             <HardDrive className="w-4 h-4 text-gray-500 shrink-0" />
-            All images stored in SeaweedFS
+            All images stored in object store
           </li>
         </ul>
 
@@ -114,7 +114,7 @@ function ConfirmModal({ onConfirm, onCancel }) {
             <h3 className="text-base font-semibold text-gray-100">Delete all data?</h3>
             <p className="text-sm text-gray-400 mt-1">
               This will permanently erase every document chunk in Weaviate and
-              every file in SeaweedFS. There is no undo.
+              every file in object store. There is no undo.
             </p>
           </div>
         </div>
@@ -179,9 +179,9 @@ function ResultBanner({ result, onDismiss }) {
         </li>
         <li>
           <HardDrive className="inline w-3.5 h-3.5 mr-1.5 text-gray-500" />
-          {result.objects} SeaweedFS object(s) deleted
-          {result.seaweedfsError && (
-            <span className="ml-2 text-yellow-400">(warning: {result.seaweedfsError})</span>
+          {result.objects} object store object(s) deleted
+          {result.objectStoreError && (
+            <span className="ml-2 text-yellow-400">(warning: {result.objectStoreError})</span>
           )}
         </li>
       </ul>

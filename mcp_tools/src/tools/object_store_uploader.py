@@ -1,17 +1,17 @@
 """
-SeaweedFS media uploader using boto3 S3-compatible API.
+object store media uploader using boto3 S3-compatible API.
 
-Uploads bytes/files to SeaweedFS and returns pre-signed GET URLs that can be
+Uploads bytes/files to object store and returns pre-signed GET URLs that can be
 passed back to the agent or embedded in tool responses.
 
 Configuration via environment variables:
-    SEAWEEDFS_ENDPOINT         – e.g. "seaweedfs:8333" (no scheme)
-    SEAWEEDFS_ACCESS_KEY       – access key (default "")
-    SEAWEEDFS_SECRET_KEY       – secret key (default "")
-    SEAWEEDFS_SECURE           – "true" for HTTPS (default "false")
-    SEAWEEDFS_BUCKET           – bucket name (default "media")
-    SEAWEEDFS_PRESIGN_EXPIRY   – pre-signed URL expiry in seconds (default 3600)
-    SEAWEEDFS_EXTERNAL_ENDPOINT – external host for pre-signed URLs when the
+    OBJECT_STORE_ENDPOINT         – e.g. "seaweedfs:8333" (no scheme)
+    OBJECT_STORE_ACCESS_KEY       – access key (default "")
+    OBJECT_STORE_SECRET_KEY       – secret key (default "")
+    OBJECT_STORE_SECURE           – "true" for HTTPS (default "false")
+    OBJECT_STORE_BUCKET           – bucket name (default "media")
+    OBJECT_STORE_PRESIGN_EXPIRY   – pre-signed URL expiry in seconds (default 3600)
+    OBJECT_STORE_EXTERNAL_ENDPOINT – external host for pre-signed URLs when the
         internal endpoint differs from what clients can reach
 """
 
@@ -37,14 +37,14 @@ def _get_s3_client():
     if _s3_client is not None:
         return _s3_client
 
-    endpoint = os.environ.get("SEAWEEDFS_ENDPOINT", "seaweedfs:8333")
-    access_key = os.environ.get("SEAWEEDFS_ACCESS_KEY", "")
-    secret_key = os.environ.get("SEAWEEDFS_SECRET_KEY", "")
-    secure = os.environ.get("SEAWEEDFS_SECURE", "false").lower() in ("1", "true", "yes")
+    endpoint = os.environ.get("OBJECT_STORE_ENDPOINT", "seaweedfs:8333")
+    access_key = os.environ.get("OBJECT_STORE_ACCESS_KEY", "")
+    secret_key = os.environ.get("OBJECT_STORE_SECRET_KEY", "")
+    secure = os.environ.get("OBJECT_STORE_SECURE", "false").lower() in ("1", "true", "yes")
 
     scheme = "https" if secure else "http"
     endpoint_url = f"{scheme}://{endpoint}"
-    logger.info("Connecting to SeaweedFS S3 at %s …", endpoint_url)
+    logger.info("Connecting to object store at %s …", endpoint_url)
 
     _s3_client = boto3.client(
         "s3",
@@ -58,28 +58,28 @@ def _get_s3_client():
 
 
 def _get_presign_client():
-    external = os.environ.get("SEAWEEDFS_EXTERNAL_ENDPOINT")
+    external = os.environ.get("OBJECT_STORE_EXTERNAL_ENDPOINT")
     if not external:
         return _get_s3_client()
 
-    secure = os.environ.get("SEAWEEDFS_SECURE", "false").lower() in ("1", "true", "yes")
+    secure = os.environ.get("OBJECT_STORE_SECURE", "false").lower() in ("1", "true", "yes")
     scheme = "https" if secure else "http"
     return boto3.client(
         "s3",
         endpoint_url=f"{scheme}://{external}",
-        aws_access_key_id=os.environ.get("SEAWEEDFS_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("SEAWEEDFS_SECRET_KEY", ""),
+        aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", ""),
+        aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", ""),
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
     )
 
 
 def _default_bucket() -> str:
-    return os.environ.get("SEAWEEDFS_BUCKET", "media")
+    return os.environ.get("OBJECT_STORE_BUCKET", "media")
 
 
 def _presign_expiry() -> int:
-    return int(os.environ.get("SEAWEEDFS_PRESIGN_EXPIRY", "3600"))
+    return int(os.environ.get("OBJECT_STORE_PRESIGN_EXPIRY", "3600"))
 
 
 def _ensure_bucket(bucket: str) -> None:
@@ -97,7 +97,7 @@ def upload_bytes(
     content_type: str = "application/octet-stream",
     bucket: str | None = None,
 ) -> str:
-    """Upload raw bytes to SeaweedFS and return a pre-signed GET URL."""
+    """Upload raw bytes to object store and return a pre-signed GET URL."""
     bucket = bucket or _default_bucket()
     _ensure_bucket(bucket)
 
@@ -116,7 +116,7 @@ def upload_bytes(
         ExpiresIn=_presign_expiry(),
     )
     logger.info(
-        "Uploaded %d bytes → seaweedfs://%s/%s (expiry=%ds)",
+        "Uploaded %d bytes → objstore://%s/%s (expiry=%ds)",
         len(data), bucket, object_key, _presign_expiry(),
     )
     return url
@@ -144,21 +144,21 @@ def upload_image_bytes(
     return upload_bytes(data, object_key, content_type=content_type, bucket=bucket)
 
 
-def _parse_seaweedfs_path(path: str) -> tuple[str, str]:
-    """Parse a seaweedfs://bucket/key path into (bucket, key)."""
-    without_scheme = path.removeprefix("seaweedfs://")
+def _parse_object_store_path(path: str) -> tuple[str, str]:
+    """Parse an objstore://bucket/key path into (bucket, key)."""
+    without_scheme = path.removeprefix("objstore://")
     bucket, _, key = without_scheme.partition("/")
     return bucket, key
 
 
 def get_presigned_url(path: str, expiry: int | None = None) -> str:
-    """Generate a presigned GET URL for a seaweedfs:// path reference.
+    """Generate a presigned GET URL for an objstore:// path reference.
 
     Args:
-        path: seaweedfs:// path, e.g. ``seaweedfs://media/docling/doc/123.png``
-        expiry: URL validity in seconds; defaults to SEAWEEDFS_PRESIGN_EXPIRY env var.
+        path: objstore:// path, e.g. ``objstore://media/docling/doc/123.png``
+        expiry: URL validity in seconds; defaults to OBJECT_STORE_PRESIGN_EXPIRY env var.
     """
-    bucket, key = _parse_seaweedfs_path(path)
+    bucket, key = _parse_object_store_path(path)
     expiry = expiry or _presign_expiry()
     url = _get_presign_client().generate_presigned_url(
         "get_object",
@@ -170,15 +170,15 @@ def get_presigned_url(path: str, expiry: int | None = None) -> str:
 
 
 def get_image_base64(path: str) -> str:
-    """Download an image from SeaweedFS and return it as a base64-encoded data URL.
+    """Download an image from object store and return it as a base64-encoded data URL.
 
     Args:
-        path: seaweedfs:// path, e.g. ``seaweedfs://media/docling/doc/123.png``
+        path: objstore:// path, e.g. ``objstore://media/docling/doc/123.png``
 
     Returns:
         A data URL string: ``data:image/png;base64,...``
     """
-    bucket, key = _parse_seaweedfs_path(path)
+    bucket, key = _parse_object_store_path(path)
     response = _get_s3_client().get_object(Bucket=bucket, Key=key)
     img_bytes = response["Body"].read()
     content_type = response.get("ContentType", "image/png")

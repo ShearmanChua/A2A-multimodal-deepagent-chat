@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .chunker import chunk_markdown
 from .converter import convert_to_markdown
 from .embedder import get_embedder
-from .seaweedfs_client import delete_all_objects, get_presigned_url_from_path, seaweedfs_configured, upload_document_image
+from .object_store_client import delete_all_objects, get_presigned_url_from_path, object_store_configured, upload_document_image
 from .weaviate_client import delete_all_collections, list_collections, sanitize_collection_name, search_collection, upload_chunks
 
 logging.basicConfig(
@@ -54,7 +54,7 @@ async def _process_job(
     job_id: str, files_data: list[tuple[str, bytes]], collection: str
 ) -> None:
     job = _jobs[job_id]
-    upload_fn = upload_document_image if seaweedfs_configured() else None
+    upload_fn = upload_document_image if object_store_configured() else None
     loop = asyncio.get_event_loop()
     any_error = False
 
@@ -154,14 +154,14 @@ async def search_documents(
     results = await loop.run_in_executor(
         None, search_collection, collection, vector, query, limit, alpha
     )
-    # Convert stored seaweedfs:// paths to fresh presigned URLs for the frontend
-    if seaweedfs_configured():
+    # Convert stored objstore:// paths to fresh presigned URLs for the frontend
+    if object_store_configured():
         for chunk in results:
             props = chunk.get("properties", {})
             raw_images = props.get("images") or []
             resolved = []
             for ref in raw_images:
-                if isinstance(ref, str) and ref.startswith("seaweedfs://"):
+                if isinstance(ref, str) and ref.startswith("objstore://"):
                     try:
                         resolved.append(get_presigned_url_from_path(ref))
                     except Exception:
@@ -227,7 +227,7 @@ def delete_job(job_id: str):
 
 @app.post("/ingest/reset")
 async def reset_all():
-    """Delete every Weaviate collection and every SeaweedFS object in the bucket."""
+    """Delete every Weaviate collection and every object store object in the bucket."""
     loop = asyncio.get_event_loop()
 
     try:
@@ -242,11 +242,11 @@ async def reset_all():
     try:
         deleted_objects = await loop.run_in_executor(None, delete_all_objects)
     except Exception as exc:
-        logger.exception("Error deleting SeaweedFS objects")
+        logger.exception("Error deleting object store objects")
         deleted_objects = 0
-        seaweedfs_error = str(exc)
+        object_store_error = str(exc)
     else:
-        seaweedfs_error = None
+        object_store_error = None
 
     # Also clear the in-memory job store.
     _jobs.clear()
@@ -259,5 +259,5 @@ async def reset_all():
         "collections_deleted": deleted_collections,
         "objects_deleted": deleted_objects,
         "weaviate_error": weaviate_error,
-        "seaweedfs_error": seaweedfs_error,
+        "object_store_error": object_store_error,
     }

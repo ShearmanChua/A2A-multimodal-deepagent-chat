@@ -42,14 +42,17 @@ def build_content_base64(
         blocks.append({"type": "image_url", "image_url": {"url": url}})
     if video_b64:
         blocks.append({"type": "text", "text": "[Video]"})
-        blocks.append({"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{video_b64}"}})
+        blocks.append({
+            "type": "video_url",
+            "video_url": {"url": f"data:video/mp4;base64,{video_b64}"},
+        })
     for i, url in enumerate(video_urls or []):
         blocks.append({"type": "text", "text": f"[Video {i + 1}]"})
         blocks.append({"type": "video_url", "video_url": {"url": url}})
     return blocks
 
 
-def build_content_seaweedfs(
+def build_content_object_store(
     text: str,
     image_urls: list[str] | None = None,
     video_urls: list[str] | None = None,

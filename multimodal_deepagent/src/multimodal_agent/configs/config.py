@@ -8,8 +8,8 @@ from pathlib import Path
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://rag-mcp-server-1:8000")
 MAX_VIDEO_FRAMES = int(os.environ.get("MAX_VIDEO_FRAMES", "8"))
 
-# "base64"    – pass images as data URLs directly to the LLM
-# "seaweedfs" – upload to SeaweedFS and use pre-signed URLs
+# "base64"       - pass images as data URLs directly to the LLM
+# "object_store" - upload to an S3-compatible object store and use pre-signed URLs
 IMAGE_MODE = os.environ.get("IMAGE_MODE", "base64").lower()
 
 MEMORIES_DIR = Path(os.environ.get("MEMORIES_DIR", "/app/src/memories"))
@@ -22,6 +22,6 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 
 
-def seaweedfs_available() -> bool:
-    """Return True when a SeaweedFS endpoint is configured."""
-    return bool(os.environ.get("SEAWEEDFS_ENDPOINT"))
+def object_store_available() -> bool:
+    """Return True when an S3-compatible object store endpoint is configured."""
+    return bool(os.environ.get("OBJECT_STORE_ENDPOINT"))

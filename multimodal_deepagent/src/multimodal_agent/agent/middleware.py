@@ -16,7 +16,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-# Matches SeaweedFS / S3 presigned URLs and direct image-extension URLs.
+# Matches S3-compatible object store presigned URLs and direct image-extension URLs.
 IMAGE_URL_RE = re.compile(
     r'https?://\S+(?:\.(?:jpg|jpeg|png|gif|webp|bmp|tiff)(?:[?#]\S*)?'
     r'|[?&]X-Amz-Signature=[^\s"\'<>]*)',
@@ -35,7 +35,7 @@ async def extract_images_to_human(messages: list) -> list:
 
     1. **Legacy MCP Image blobs** — ``{"type": "image", "data": ..., "mimeType": ...}``
        in a list-typed ToolMessage content.
-    2. **SeaweedFS URL dicts** — ``{"type": "image_url", "url": ...}`` in a list-typed
+    2. **object store URL dicts** — ``{"type": "image_url", "url": ...}`` in a list-typed
        ToolMessage content (returned by ``get_minio_object`` and similar tools).
     3. **String content** — scans for presigned / image-extension URLs with a regex,
        and also parses JSON strings containing an ``image_url`` key.
@@ -64,7 +64,7 @@ async def extract_images_to_human(messages: list) -> list:
                         "image_url": {"url": f"data:{mime};base64,{data}"},
                     })
                 elif item.get("type") == "image_url" and item.get("url"):
-                    # SeaweedFS presigned URL from MCP tool
+                    # Object store presigned URL from MCP tool
                     images_found.append({
                         "type": "image_url",
                         "image_url": {"url": item["url"]},
