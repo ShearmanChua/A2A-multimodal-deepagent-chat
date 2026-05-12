@@ -75,27 +75,22 @@ class A2AClient {
    * @param {string} [opts.systemPrompt] - Optional system prompt.
    * @param {Array<{bytes: string, mimeType: string}>} [opts.images] - Base64 images.
    * @param {{bytes: string, mimeType: string}} [opts.video] - Base64 video.
+   * @param {Array<{bytes: string, mimeType: string, name: string}>} [opts.documents] - Base64 documents.
    * @param {string} [opts.contextId] - Conversation context ID.
    * @returns {object} JSON-RPC request body for message/send.
    */
-  buildSendMessageRequest({ text, systemPrompt, images, video, contextId }) {
+  buildSendMessageRequest({ text, systemPrompt, images, video, documents, contextId }) {
     const parts = [];
 
     // User text
-    parts.push({
-      kind: "text",
-      text,
-    });
+    parts.push({ kind: "text", text });
 
     // Images (multiple)
     if (images && images.length > 0) {
       for (const img of images) {
         parts.push({
           kind: "file",
-          file: {
-            bytes: img.bytes,
-            mimeType: img.mimeType || "image/jpeg",
-          },
+          file: { bytes: img.bytes, mimeType: img.mimeType || "image/jpeg" },
         });
       }
     }
@@ -104,14 +99,38 @@ class A2AClient {
     if (video) {
       parts.push({
         kind: "file",
-        file: {
-          bytes: video.bytes,
-          mimeType: video.mimeType || "video/mp4",
-        },
+        file: { bytes: video.bytes, mimeType: video.mimeType || "video/mp4" },
       });
     }
 
+    // Documents — FileWithUri (presigned URL) when the object store uploaded the
+    // file; FileWithBytes (base64) as fallback when the object store is not
+    // available.  Original filenames go in metadata so the agent executor can
+    // map them to /uploads/<name> in the virtual filesystem.
+    if (documents && documents.length > 0) {
+      for (const doc of documents) {
+        if (doc.presignedUrl) {
+          parts.push({
+            kind: "file",
+            file: { uri: doc.presignedUrl, mimeType: doc.mimeType },
+          });
+        } else {
+          parts.push({
+            kind: "file",
+            file: { bytes: doc.bytes, mimeType: doc.mimeType },
+          });
+        }
+      }
+    }
+
     const messageId = uuidv4().replace(/-/g, "");
+
+    // Build metadata: always include system_prompt and document_names when present
+    const metadata = {};
+    if (systemPrompt) metadata.system_prompt = systemPrompt;
+    if (documents && documents.length > 0) {
+      metadata.document_names = documents.map((d) => d.name);
+    }
 
     return {
       jsonrpc: "2.0",
@@ -124,7 +143,7 @@ class A2AClient {
           messageId,
           ...(contextId ? { contextId } : {}),
         },
-        ...(systemPrompt ? { metadata: { system_prompt: systemPrompt } } : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       },
     };
   }

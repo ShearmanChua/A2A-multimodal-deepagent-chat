@@ -18,6 +18,7 @@ const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
 
 const { A2AClient } = require("./a2aClient");
+const { isObjectStoreAvailable, uploadBufferAndPresign } = require("./objectStore");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -55,6 +56,67 @@ const upload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 });
+
+// ---------------------------------------------------------------------------
+// Document detection helpers
+// ---------------------------------------------------------------------------
+
+const DOCUMENT_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+]);
+
+const DOCUMENT_EXTS = new Set([".pdf", ".docx", ".doc", ".txt", ".md", ".csv"]);
+
+/** Return true when the multer file object is a document (not image/video). */
+function isDocumentFile(file) {
+  if (DOCUMENT_MIMES.has(file.mimetype)) return true;
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  return DOCUMENT_EXTS.has(ext);
+}
+
+/**
+ * Split an array of multer files into { images, video, documents }.
+ *
+ * Images and video are kept as base64 (inline).  Documents are uploaded to
+ * the object store when available, returning a { presignedUrl } entry so that
+ * the A2A message can use FileWithUri instead of embedding large bytes.
+ * Falls back to base64 when the object store is not configured.
+ */
+async function classifyFiles(files) {
+  const images = [];
+  let video = null;
+  const documents = [];
+
+  for (const file of files) {
+    const fileBuffer = fs.readFileSync(file.path);
+    fs.unlinkSync(file.path);
+
+    if (file.mimetype.startsWith("image/")) {
+      images.push({ bytes: fileBuffer.toString("base64"), mimeType: file.mimetype });
+    } else if (file.mimetype.startsWith("video/") && !video) {
+      video = { bytes: fileBuffer.toString("base64"), mimeType: file.mimetype };
+    } else if (isDocumentFile(file)) {
+      if (isObjectStoreAvailable()) {
+        try {
+          const presignedUrl = await uploadBufferAndPresign(fileBuffer, file.mimetype, file.originalname);
+          documents.push({ presignedUrl, mimeType: file.mimetype, name: file.originalname });
+        } catch (err) {
+          console.error(`[classifyFiles] Object store upload failed for ${file.originalname}: ${err.message} — falling back to base64`);
+          documents.push({ bytes: fileBuffer.toString("base64"), mimeType: file.mimetype, name: file.originalname });
+        }
+      } else {
+        documents.push({ bytes: fileBuffer.toString("base64"), mimeType: file.mimetype, name: file.originalname });
+      }
+    }
+  }
+
+  return { images, video, documents };
+}
 
 // Serve static files from React build in production
 if (process.env.NODE_ENV === "production") {
@@ -355,35 +417,15 @@ app.post("/api/chat/upload", upload.array("files", 10), async (req, res) => {
   }
 
   try {
-    const images = [];
-    let video = null;
-
-    for (const file of req.files) {
-      const fileBuffer = fs.readFileSync(file.path);
-      const base64 = fileBuffer.toString("base64");
-
-      if (file.mimetype.startsWith("image/")) {
-        images.push({
-          bytes: base64,
-          mimeType: file.mimetype,
-        });
-      } else if (file.mimetype.startsWith("video/") && !video) {
-        video = {
-          bytes: base64,
-          mimeType: file.mimetype,
-        };
-      }
-
-      // Clean up uploaded file
-      fs.unlinkSync(file.path);
-    }
+    const { images, video, documents } = await classifyFiles(req.files);
 
     const client = new A2AClient(agent.url);
     const response = await client.sendMessage({
-      text: query || "Analyze the uploaded media.",
+      text: query || "Analyze the uploaded files.",
       systemPrompt,
       images: images.length > 0 ? images : undefined,
       video,
+      documents: documents.length > 0 ? documents : undefined,
       contextId,
     });
 
@@ -723,42 +765,23 @@ app.post(
     }
 
     try {
-      const images = [];
-      let video = null;
-
-      for (const file of req.files) {
-        const fileBuffer = fs.readFileSync(file.path);
-        const base64 = fileBuffer.toString("base64");
-
-        if (file.mimetype.startsWith("image/")) {
-          images.push({
-            bytes: base64,
-            mimeType: file.mimetype,
-          });
-        } else if (file.mimetype.startsWith("video/") && !video) {
-          video = {
-            bytes: base64,
-            mimeType: file.mimetype,
-          };
-        }
-
-        fs.unlinkSync(file.path);
-      }
+      const { images, video, documents } = await classifyFiles(req.files);
 
       // Add user message to history
       const fileNames = req.files.map((f) => f.originalname).join(", ");
       session.history.push({
         role: "user",
-        content: `[Media Upload: ${fileNames}] ${query || ""}`,
+        content: `[File Upload: ${fileNames}] ${query || ""}`,
         timestamp: new Date().toISOString(),
       });
 
       const client = new A2AClient(agent.url);
       const response = await client.sendMessage({
-        text: query || "Analyze the uploaded media.",
+        text: query || "Analyze the uploaded files.",
         systemPrompt: session.history.length === 1 ? session.systemPrompt : undefined,
         images: images.length > 0 ? images : undefined,
         video,
+        documents: documents.length > 0 ? documents : undefined,
         contextId: session.contextId,
       });
 
@@ -825,33 +848,13 @@ app.post(
     res.flushHeaders();
 
     try {
-      const images = [];
-      let video = null;
-
-      for (const file of req.files) {
-        const fileBuffer = fs.readFileSync(file.path);
-        const base64 = fileBuffer.toString("base64");
-
-        if (file.mimetype.startsWith("image/")) {
-          images.push({
-            bytes: base64,
-            mimeType: file.mimetype,
-          });
-        } else if (file.mimetype.startsWith("video/") && !video) {
-          video = {
-            bytes: base64,
-            mimeType: file.mimetype,
-          };
-        }
-
-        fs.unlinkSync(file.path);
-      }
+      const { images, video, documents } = await classifyFiles(req.files);
 
       // Add user message to history
       const fileNames = req.files.map((f) => f.originalname).join(", ");
       session.history.push({
         role: "user",
-        content: `[Media Upload: ${fileNames}] ${query || ""}`,
+        content: `[File Upload: ${fileNames}] ${query || ""}`,
         timestamp: new Date().toISOString(),
       });
 
@@ -865,10 +868,11 @@ app.post(
       console.log("[StreamingUpload] Starting streaming to agent:", agent.url);
       await client.sendStreamingMessage(
         {
-          text: query || "Analyze the uploaded media.",
+          text: query || "Analyze the uploaded files.",
           systemPrompt: session.history.length === 1 ? session.systemPrompt : undefined,
           images: images.length > 0 ? images : undefined,
           video,
+          documents: documents.length > 0 ? documents : undefined,
           contextId: session.contextId,
         },
         (parsed) => {

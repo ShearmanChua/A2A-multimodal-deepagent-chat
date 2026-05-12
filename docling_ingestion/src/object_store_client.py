@@ -108,8 +108,8 @@ def upload_document_image(
 
 
 def get_presigned_url_from_path(path: str) -> str:
-    """Generate a presigned GET URL for an objstore:// path reference."""
-    without_scheme = path.removeprefix("objstore://")
+    """Generate a presigned GET URL for a path with any URI scheme (e.g. objstore://)."""
+    without_scheme = path.split("://", 1)[-1]
     bucket, _, key = without_scheme.partition("/")
     expiry = int(os.environ.get("OBJECT_STORE_PRESIGN_EXPIRY", "3600"))
     return _get_presign_client().generate_presigned_url(

@@ -30,7 +30,7 @@ Answer the user's question by searching the Weaviate knowledge base.
 | `list_weaviate_collections` | — | `[{name, description, properties}]` |
 | `get_weaviate_collection_schema` | `collection_name` | `{name, description, properties, vectorizer}` |
 | `query_weaviate` | `collection_name, query, limit=10, alpha=0.5` | `[{properties, score, uuid}]` |
-| `get_object_store_image_base64` | `path` (objstore:// path) | `data:image/...;base64,...` |
+| `get_object_store_image_base64` | `path` (objstore:// path) | Image content block |
 | `get_object_store_presigned_url` | `path` (objstore:// path), `expiry` (optional seconds) | presigned URL string |
 
 ## Result Properties

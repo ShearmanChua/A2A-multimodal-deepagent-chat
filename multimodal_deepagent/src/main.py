@@ -90,14 +90,20 @@ def main(host: str, port: int) -> None:
             os.environ.get("MCP_SERVER_URL", "http://research-mcp-server-1:8000"),
         )
 
+        # max_content_length covers the full JSON-RPC body including base64-encoded
+        # file bytes. Large documents can easily exceed the default 10 MB, so we
+        # raise it to 200 MB which comfortably handles multi-page PDFs.
+        max_body = int(os.environ.get("A2A_MAX_CONTENT_LENGTH", str(200 * 1024 * 1024)))
+
         # Run the A2A server
         uvicorn.run(
             A2AStarletteApplication(
                 agent_card=agent_card,
-                http_handler=request_handler
+                http_handler=request_handler,
+                max_content_length=max_body,
             ).build(),
             host=host,
-            port=port
+            port=port,
         )
 
     except Exception as e:

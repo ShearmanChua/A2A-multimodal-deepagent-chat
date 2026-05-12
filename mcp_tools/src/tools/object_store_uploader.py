@@ -17,7 +17,6 @@ Configuration via environment variables:
 
 from __future__ import annotations
 
-import base64
 import io
 import logging
 import os
@@ -145,8 +144,8 @@ def upload_image_bytes(
 
 
 def _parse_object_store_path(path: str) -> tuple[str, str]:
-    """Parse an objstore://bucket/key path into (bucket, key)."""
-    without_scheme = path.removeprefix("objstore://")
+    """Parse a bucket/key path with any URI scheme (e.g. objstore://, https://) into (bucket, key)."""
+    without_scheme = path.split("://", 1)[-1]
     bucket, _, key = without_scheme.partition("/")
     return bucket, key
 
@@ -169,19 +168,18 @@ def get_presigned_url(path: str, expiry: int | None = None) -> str:
     return url
 
 
-def get_image_base64(path: str) -> str:
-    """Download an image from object store and return it as a base64-encoded data URL.
+def get_image_bytes(path: str) -> tuple[bytes, str]:
+    """Download an image from object store and return (raw bytes, content_type).
 
     Args:
         path: objstore:// path, e.g. ``objstore://media/docling/doc/123.png``
 
     Returns:
-        A data URL string: ``data:image/png;base64,...``
+        Tuple of (image bytes, MIME type string e.g. "image/png").
     """
     bucket, key = _parse_object_store_path(path)
     response = _get_s3_client().get_object(Bucket=bucket, Key=key)
     img_bytes = response["Body"].read()
     content_type = response.get("ContentType", "image/png")
-    b64 = base64.b64encode(img_bytes).decode("utf-8")
     logger.info("Retrieved image from %s (%d bytes)", path, len(img_bytes))
-    return f"data:{content_type};base64,{b64}"
+    return img_bytes, content_type

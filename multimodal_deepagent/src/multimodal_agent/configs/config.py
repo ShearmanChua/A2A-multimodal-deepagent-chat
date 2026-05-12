@@ -18,6 +18,9 @@ MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
 SKILLS_DIR = Path(os.environ.get("SKILLS_DIR", "/app/src/skills"))
 SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
+UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", "/app/uploads"))
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 

@@ -13,11 +13,14 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, object_store_available
+from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, UPLOADS_DIR, object_store_available
 from multimodal_agent.agent.content_builders import build_content_base64, build_content_object_store
 from multimodal_agent.agent.middleware import parse_messages_before_model
-from multimodal_agent.utils.object_store_uploader import upload_base64, upload_file
+from multimodal_agent.utils.object_store_uploader import upload_base64, upload_file, upload_text_to_key
 from multimodal_agent.agent.tools import ResponseFormat, wrap_tools_with_error_handling
+from multimodal_agent.backends.object_store_backend import ObjectStoreBackend
+
+_UPLOADS_BUCKET = os.environ.get("OBJECT_STORE_UPLOADS_BUCKET", "uploads")
 
 # ── Optional dependencies ─────────────────────────────────────────────────────
 
@@ -51,6 +54,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_CONTENT_TYPES = ["text", "text/plain", "image/png", "image/jpeg", "video/mp4"]
 
 
+
 # ---------------------------------------------------------------------------
 # MultimodalAgent
 # ---------------------------------------------------------------------------
@@ -72,8 +76,10 @@ class MultimodalAgent:
         "  1. Call `list_weaviate_collections` to see what collections exist.\n"
         "  2. Call `query_weaviate` with the user's question on the most relevant collection(s).\n"
         "  3. Synthesise the retrieved chunks into a clear answer and cite sources.\n"
-        "- If the retrieved chunks do not fully answer the question, perform query expansion"
-        " and query_weaviate again.\n"
+        " - If the retrieved chunks do not fully answer the question, or there is another "
+        "relevant collection,  perform query expansionand query_weaviate again.\n"
+        " - If the retrieved chunks contain images, call `get_object_store_image_base64` "
+        "  to retrieve them and analyse them.\n"
         "- If the knowledge base returns no useful results, say so and answer from general knowledge"
         "  only when you are confident — otherwise ask the user to ingest the relevant documents.\n\n"
         "## General guidelines\n"
@@ -127,6 +133,13 @@ class MultimodalAgent:
             self.tools = wrap_tools_with_error_handling(self.tools)
 
         if DEEPAGENTS_AVAILABLE:
+            if object_store_available():
+                uploads_backend = ObjectStoreBackend(bucket=_UPLOADS_BUCKET)
+                logger.info("Using ObjectStoreBackend for /uploads/ (bucket: %s)", _UPLOADS_BUCKET)
+            else:
+                uploads_backend = FilesystemBackend(root_dir=str(UPLOADS_DIR), virtual_mode=True)
+                logger.info("Using FilesystemBackend for /uploads/ (dir: %s)", UPLOADS_DIR)
+
             self.agent = create_deep_agent(
                 model=self.model,
                 tools=self.tools,
@@ -146,6 +159,7 @@ class MultimodalAgent:
                             root_dir=str(SKILLS_DIR),
                             virtual_mode=True,
                         ),
+                        "/uploads/": uploads_backend,
                     },
                 ),
             )
@@ -193,6 +207,7 @@ class MultimodalAgent:
         video_path: str | None = None,
         video_b64: str | None = None,
         video_urls: list[str] | None = None,
+        documents: list[tuple[str, str]] | None = None,
     ) -> AsyncIterable[dict[str, Any]]:
         """Stream agent responses for a user query with optional media.
 
@@ -201,6 +216,30 @@ class MultimodalAgent:
         final_response).
         """
         await self._ensure_initialized()
+
+        # Pre-seed the /uploads/<context_id>/ virtual directory so the agent can
+        # read documents immediately without calling write_file first.
+        if documents:
+            file_list = "\n".join(
+                f"  • /uploads/{context_id}/{name}" for name, _ in documents
+            )
+            if object_store_available():
+                for name, text in documents:
+                    key = f"{context_id}/{name}"
+                    upload_text_to_key(text, key, bucket=_UPLOADS_BUCKET)
+                    logger.info("Uploaded document to s3://%s/%s", _UPLOADS_BUCKET, key)
+            else:
+                upload_subdir = UPLOADS_DIR / context_id
+                upload_subdir.mkdir(parents=True, exist_ok=True)
+                for name, text in documents:
+                    (upload_subdir / name).write_text(text, encoding="utf-8")
+                    logger.info("Wrote document to %s/%s/%s", UPLOADS_DIR, context_id, name)
+
+            query = (
+                f"The user has uploaded {len(documents)} document(s). "
+                f"They are already available on the virtual filesystem:\n{file_list}\n"
+                f"Use read_file, grep, or glob to access them.\n\n"
+            ) + query
 
         all_image_b64s: list[str] = []
         uploaded_image_urls: list[str] = []
@@ -255,6 +294,7 @@ class MultimodalAgent:
         messages.append(HumanMessage(content=content))
 
         input_payload = {"messages": messages}
+        logger.info("Agent input payload: %s", str(input_payload))
         config = {"configurable": {"thread_id": context_id}, "recursion_limit": 100}
         processed_ids: set[str] = set()
 

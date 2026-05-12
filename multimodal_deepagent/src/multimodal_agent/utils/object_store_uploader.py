@@ -146,6 +146,23 @@ def upload_file(
     return upload_bytes(path.read_bytes(), object_key, content_type=mime, bucket=bucket)
 
 
+def upload_text_to_key(
+    text: str,
+    object_key: str,
+    bucket: str | None = None,
+) -> None:
+    """Upload a UTF-8 text string to a specific object key (no pre-signed URL)."""
+    bucket = bucket or _default_bucket()
+    _ensure_bucket(bucket)
+    _get_s3_client().put_object(
+        Bucket=bucket,
+        Key=object_key,
+        Body=text.encode("utf-8"),
+        ContentType="text/plain; charset=utf-8",
+    )
+    logger.info("Uploaded text → s3://%s/%s (%d chars)", bucket, object_key, len(text))
+
+
 def upload_base64(
     b64_data: str,
     ext: str = "jpg",

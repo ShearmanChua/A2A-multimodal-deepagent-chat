@@ -22,6 +22,7 @@ Metadata schema (``message.metadata`` / ``update_status`` *metadata*):
 
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
 from pathlib import Path
@@ -92,6 +93,10 @@ class _ExtractedParts:
         self.video_path: str | None = None
         self.video_b64: str | None = None
         self.video_urls: list[str] = []
+        # (virtual_filename, markdown_text) for each uploaded document
+        self.documents: list[tuple[str, str]] = []
+        # (orig_name, uri, mime) for URI-based documents that need async download
+        self.document_uris: list[tuple[str, str, str]] = []
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +131,25 @@ class MultimodalAgentExecutor(AgentExecutor):
         # Extract all parts from the A2A message
         parts = self._extract_parts(context)
 
+        # Download and convert any URI-based documents (presigned URLs from object store)
+        if parts.document_uris:
+            from multimodal_agent.agent.doc_converter import convert_to_markdown, virtual_filename
+            import httpx
+            async with httpx.AsyncClient() as http_client:
+                for orig_name, uri, mime in parts.document_uris:
+                    try:
+                        resp = await http_client.get(uri, timeout=60.0, follow_redirects=True)
+                        resp.raise_for_status()
+                        md_text = convert_to_markdown(resp.content, mime, orig_name)
+                        vname = virtual_filename(orig_name)
+                        parts.documents.append((vname, md_text))
+                        logger.info(
+                            "Downloaded and converted '%s' → /uploads/%s (%d chars)",
+                            orig_name, vname, len(md_text),
+                        )
+                    except Exception as exc:
+                        logger.error("Failed to download document '%s' from URI: %s", orig_name, exc)
+
         if not parts.query:
             raise ServerError(error=InvalidParamsError())
 
@@ -147,6 +171,7 @@ class MultimodalAgentExecutor(AgentExecutor):
                 video_path=parts.video_path,
                 video_b64=parts.video_b64,
                 video_urls=parts.video_urls if parts.video_urls else None,
+                documents=parts.documents if parts.documents else None,
             ):
                 is_task_complete = item["is_task_complete"]
                 require_user_input = item["require_user_input"]
@@ -292,54 +317,79 @@ class MultimodalAgentExecutor(AgentExecutor):
             raise ServerError(error=InternalError()) from e
 
     def _extract_parts(self, context: RequestContext) -> _ExtractedParts:
-        """Extract system prompt, text query, images, and video from A2A message.
+        """Extract system prompt, text query, images, video, and documents from A2A message.
 
         System prompt:
         - Read from ``MessageSendParams.metadata["system_prompt"]``.
 
+        Documents:
+        - FileParts whose MIME type is in DOCUMENT_MIMES are collected in order.
+        - Their original filenames come from ``metadata["document_names"]``
+          (a parallel list set by the Express server).
+        - Each is converted to markdown by ``doc_converter.convert_to_markdown``.
+
         Images:
-        - All FileParts with ``image/*`` MIME types are collected (multiple
-          images supported).
+        - All FileParts with ``image/*`` MIME types are collected.
 
         Video:
-        - Only the **first** FilePart with ``video/*`` MIME type is used.
-
-        Returns
-        -------
-        _ExtractedParts
-            Container with all extracted data.
+        - Only the first FilePart with ``video/*`` MIME type is used.
         """
+        from multimodal_agent.agent.doc_converter import convert_to_markdown, is_document, virtual_filename
+
         result = _ExtractedParts()
 
-        # Get the user input text as fallback
         user_input = context.get_user_input()
         if user_input:
             result.query = user_input
 
-        # MessageSendParams.metadata is the canonical location for system_prompt
         params_meta = context.metadata  # dict[str, Any], never None
         if "system_prompt" in params_meta:
             result.system_prompt = str(params_meta["system_prompt"])
 
+        # Original filenames for document parts, sent by Express as metadata
+        doc_names: list[str] = list(params_meta.get("document_names", []))
+
         logger.info("context dict: %s", context.__dict__)
 
-        # Scan message parts
         if context.message and hasattr(context.message, "parts"):
             text_parts: list[str] = []
+            # Collect document FileParts in order so we can zip with doc_names
+            doc_file_parts: list[FilePart] = []
 
             for part in context.message.parts:
-                # Unwrap Part wrapper
                 if hasattr(part, "root"):
                     part = part.root
 
                 if isinstance(part, TextPart):
                     text_parts.append(part.text or "")
                 elif isinstance(part, FilePart):
-                    self._process_file_part(part, result)
+                    mime = (part.file.mime_type or "") if hasattr(part.file, "mime_type") else ""
+                    if is_document(mime):
+                        doc_file_parts.append(part)
+                    else:
+                        self._process_file_part(part, result)
 
-            # Combine all text parts as the query
             if text_parts:
                 result.query = "\n".join(text_parts)
+
+            # Convert document parts → markdown (URI-based deferred to execute())
+            for file_part, orig_name in zip(doc_file_parts, doc_names):
+                if isinstance(file_part.file, FileWithBytes):
+                    try:
+                        raw = base64.b64decode(file_part.file.bytes)
+                        mime = file_part.file.mime_type or ""
+                        md_text = convert_to_markdown(raw, mime, orig_name)
+                        vname = virtual_filename(orig_name)
+                        result.documents.append((vname, md_text))
+                        logger.info("Converted '%s' → /uploads/%s (%d chars)", orig_name, vname, len(md_text))
+                    except Exception as exc:
+                        logger.error("Failed to convert document '%s': %s", orig_name, exc)
+                elif isinstance(file_part.file, FileWithUri):
+                    mime = file_part.file.mime_type or ""
+                    result.document_uris.append((orig_name, file_part.file.uri, mime))
+                    logger.info("Queued document '%s' for async download", orig_name)
+                else:
+                    logger.warning("Document FilePart has unknown file type, skipping: %s", orig_name)
 
         return result
 

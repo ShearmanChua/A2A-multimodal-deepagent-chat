@@ -56,13 +56,22 @@ async def extract_images_to_human(messages: list) -> list:
                     remaining.append(item)
                     continue
                 if item.get("type") == "image":
-                    # Legacy MCP Image blob — convert to data URL
-                    data = item.get("data", "")
-                    mime = item.get("mimeType", "image/jpeg")
-                    images_found.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{data}"},
-                    })
+                    if item.get("path"):
+                        # FastMCP Image(path=...) — URL-based image block
+                        images_found.append({
+                            "type": "image_url",
+                            "image_url": {"url": item["path"]},
+                        })
+                    elif item.get("base64"):
+                        # Legacy MCP Image blob — convert to data URL
+                        data = item.get("base64", "")
+                        mime = item.get("mime_type", "image/jpeg")
+                        images_found.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{data}"},
+                        })
+                    else:
+                        remaining.append(item)
                 elif item.get("type") == "image_url" and item.get("url"):
                     # Object store presigned URL from MCP tool
                     images_found.append({
@@ -85,6 +94,13 @@ async def extract_images_to_human(messages: list) -> list:
                         collected_images.append({
                             "type": "image_url",
                             "image_url": {"url": parsed["url"]},
+                        })
+                        msg.content = "image retrieved"
+                    elif parsed.get("type") == "image" and parsed.get("path"):
+                        # FastMCP Image(path=...) — URL-based image block
+                        collected_images.append({
+                            "type": "image_url",
+                            "image_url": {"url": parsed["path"]},
                         })
                         msg.content = "image retrieved"
                     elif isinstance(parsed.get("image_url"), str):

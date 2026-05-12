@@ -1,4 +1,5 @@
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 from tools.weaviate_store import (
     list_collections as weaviate_list_collections,
     get_collection_schema as weaviate_get_collection_schema,
@@ -6,7 +7,7 @@ from tools.weaviate_store import (
 )
 from tools.object_store_uploader import (
     get_presigned_url as obj_store_get_presigned_url,
-    get_image_base64 as obj_store_get_image_base64,
+    get_image_bytes as obj_store_get_image_bytes,
 )
 
 import logging
@@ -152,27 +153,28 @@ def get_object_store_presigned_url(path: str, expiry: int | None = None) -> str:
 @mcp.tool(
     name="get_object_store_image_base64",
     description=(
-        "Download an image from the object store and return it as a base64 data URL "
-        "(data:image/png;base64,...). Use this when you need to analyse or describe "
+        "Download an image from the object store and return it as an Image content block. "
+        "Use this when you need to analyse or describe "
         "an image referenced by a objstore:// path found in a Weaviate chunk's 'images' list. "
         "Prefer this over get_object_store_presigned_url when the image must be passed directly "
         "to a vision model."
     )
 )
-def get_object_store_image_base64(path: str) -> str:
+def get_object_store_image_base64(path: str) -> Image:
     """
-    Download an image from the object store and return it as a base64 data URL.
+    Download an image from the object store and return it as an Image content block.
 
     Args:
         path: objstore:// path returned by query_weaviate, e.g.
               ``objstore://media/docling/doc/123_abc.png``
 
     Returns:
-        A data URL string: ``data:image/png;base64,...``
+        An Image content block containing the raw image bytes.
     """
-    data_url = obj_store_get_image_base64(path)
-    logger.info("Retrieved base64 image for %s", path)
-    return data_url
+    img_bytes, content_type = obj_store_get_image_bytes(path)
+    fmt = content_type.split("/")[-1]
+    logger.info("Retrieved image for %s (%d bytes)", path, len(img_bytes))
+    return Image(data=img_bytes, format=fmt)
 
 
 if __name__ == "__main__":

@@ -605,6 +605,10 @@ function EmptyState({ agent, inputModes }) {
             Upload videos
           </span>
         )}
+        <span className="flex items-center gap-1 text-xs px-3 py-1.5 bg-gray-800 text-gray-300 rounded-full">
+          <FileText className="w-3 h-3 text-amber-400" />
+          Upload documents (PDF, Word, CSV…)
+        </span>
       </div>
 
       {/* Example prompts */}
@@ -978,6 +982,23 @@ function MessageBubble({ message }) {
   );
 }
 
+const DOCUMENT_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+]);
+
+const DOCUMENT_EXTS = new Set([".pdf", ".docx", ".doc", ".txt", ".md", ".csv"]);
+
+function isDocumentFile(file) {
+  if (DOCUMENT_MIMES.has(file.type)) return true;
+  const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return DOCUMENT_EXTS.has(ext);
+}
+
 /**
  * Chat input with multimodal support.
  */
@@ -1035,10 +1056,23 @@ function ChatInput({
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Build accept string based on supported modalities
-  const acceptTypes = [];
-  if (supportsImages) acceptTypes.push("image/*");
-  if (supportsVideo) acceptTypes.push("video/*");
+  // Build accept string — MIME types AND extensions for broad browser compatibility
+  const acceptTypes = [
+    "image/*",
+    "video/*",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".md",
+    ".csv",
+  ];
 
   return (
     <div className="border-t border-gray-700 bg-gray-800/50 p-4">
@@ -1054,6 +1088,8 @@ function ChatInput({
                 <Image className="w-4 h-4 text-blue-400" />
               ) : file.type.startsWith("video/") ? (
                 <Video className="w-4 h-4 text-purple-400" />
+              ) : isDocumentFile(file) ? (
+                <FileText className="w-4 h-4 text-amber-400" />
               ) : (
                 <Paperclip className="w-4 h-4 text-gray-400" />
               )}
@@ -1073,28 +1109,24 @@ function ChatInput({
 
       {/* Input form */}
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
-        {/* File upload button */}
-        {(supportsImages || supportsVideo) && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={acceptTypes.join(",")}
-              multiple
-              onChange={handleFileSelect}
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading}
-              className="p-3 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors disabled:opacity-50"
-              title="Attach files"
-            >
-              <Paperclip className="w-5 h-5" />
-            </button>
-          </>
-        )}
+        {/* File upload button — always visible */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={acceptTypes.join(",")}
+          multiple
+          onChange={handleFileSelect}
+          className="hidden"
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isLoading}
+          className="p-3 text-gray-400 hover:text-white hover:bg-gray-700 rounded-xl transition-colors disabled:opacity-50"
+          title="Attach files (images, video, PDF, Word, text)"
+        >
+          <Paperclip className="w-5 h-5" />
+        </button>
 
         {/* Text input */}
         <div className="flex-1 relative">
@@ -1147,6 +1179,10 @@ function ChatInput({
             Video
           </span>
         )}
+        <span className="flex items-center gap-1">
+          <FileText className="w-3 h-3 text-amber-500" />
+          Documents
+        </span>
       </div>
     </div>
   );
