@@ -908,6 +908,21 @@ function MessageBubble({ message }) {
     return <ToolsGroup messages={[message]} isLoading={false} />;
   }
 
+  // Streaming messages render without a bubble — text flows inline like Claude/ChatGPT.
+  // The bubble is added only once the message is finalised (type becomes "text").
+  if (isStreaming) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[85%] py-1 pl-1 text-gray-100">
+          <div className="prose prose-invert prose-sm max-w-none">
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+            <span className="inline-block w-2 h-4 ml-0.5 bg-blue-400 animate-pulse rounded-sm" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`flex ${isUser ? "justify-end" : "justify-start"}`}
@@ -920,8 +935,6 @@ function MessageBubble({ message }) {
             ? "bg-red-600/20 text-red-400 border border-red-600/30"
             : isSystem
             ? "bg-yellow-600/20 text-yellow-400 border border-yellow-600/30"
-            : isStreaming
-            ? "bg-gray-800 text-gray-100 border border-blue-500/30"
             : "bg-gray-800 text-gray-100"
         }`}
       >
@@ -956,11 +969,6 @@ function MessageBubble({ message }) {
         {/* Message content */}
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-        ) : isStreaming ? (
-          <div className="prose prose-invert prose-sm max-w-none">
-            <ReactMarkdown>{message.content}</ReactMarkdown>
-            <span className="inline-block w-2 h-4 ml-0.5 bg-blue-400 animate-pulse rounded-sm" />
-          </div>
         ) : (
           <div className="prose prose-invert prose-sm max-w-none">
             <ReactMarkdown>{message.content}</ReactMarkdown>
@@ -968,7 +976,7 @@ function MessageBubble({ message }) {
         )}
 
         {/* Timestamp */}
-        {message.timestamp && !isStreaming && (
+        {message.timestamp && (
           <p
             className={`text-[10px] mt-1 ${
               isUser ? "text-blue-200" : "text-gray-500"

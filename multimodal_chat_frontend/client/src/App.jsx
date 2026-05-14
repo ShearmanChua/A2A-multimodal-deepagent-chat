@@ -223,8 +223,20 @@ export default function App() {
             };
             setMessages((prev) => [...prev, toolMsg]);
           } else if (event.type === "llm_thought") {
-            // LLM reasoning / thoughts — the full thought text arrives
-            // as a single event (not streamed token-by-token).
+            // The thought event retroactively labels everything streamed so far
+            // as LLM reasoning before a tool call.  Remove the in-progress
+            // streaming bubble, then add a collapsed thought message, and reset
+            // streaming state so the next tokens start a fresh final-response bubble.
+            console.log("[App] llm_thought received, content len:", event.content?.length);
+            if (streamingMsgCreated) {
+              const prevId = streamingMsgId;
+              setMessages((prev) => prev.filter((m) => m.id !== prevId));
+            }
+            streamingMsgCreated = false;
+            accumulatedTokens = "";
+            totalAccumulatedTokens = "";
+            streamingMsgId = Date.now() + Math.random();
+
             if (event.content) {
               const msgId = Date.now() + Math.random();
               const thoughtMsg = {
@@ -480,7 +492,18 @@ export default function App() {
             };
             setMessages((prev) => [...prev, toolMsg]);
           } else if (event.type === "llm_thought") {
-            // LLM reasoning / thoughts — arrives as a single event.
+            // Same logic as in handleSendMessage — remove streaming bubble,
+            // create collapsed thought, reset streaming state.
+            console.log("[App] llm_thought (upload) received, content len:", event.content?.length);
+            if (streamingMsgCreated) {
+              const prevId = streamingMsgId;
+              setMessages((prev) => prev.filter((m) => m.id !== prevId));
+            }
+            streamingMsgCreated = false;
+            accumulatedTokens = "";
+            totalAccumulatedTokens = "";
+            streamingMsgId = Date.now() + Math.random();
+
             if (event.content) {
               const msgId = Date.now() + Math.random();
               const thoughtMsg = {

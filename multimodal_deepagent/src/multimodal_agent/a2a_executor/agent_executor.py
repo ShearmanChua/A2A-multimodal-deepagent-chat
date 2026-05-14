@@ -178,40 +178,29 @@ class MultimodalAgentExecutor(AgentExecutor):
                 event_type = item.get("event_type", "token")
 
                 content = item["content"]
-                logger.info(
-                    "Agent executor received event: %s, content: %s",
-                    event_type,
-                    content[:100] if content else "",
+                logger.debug(
+                    "[executor] event=%s is_complete=%s require_input=%s content_len=%d: %r",
+                    event_type, is_task_complete, require_user_input,
+                    len(content) if content else 0,
+                    (content or "")[:80],
                 )
 
-                # ----- token (LLM streaming chunk for final response) -----
-                # Tokens are streamed chunks of the final response.
-                # We send them with event_type "token" for the frontend to
-                # accumulate and display as a streaming message.
+                # ----- token: real-time LLM chunk (thought or final response) -----
                 if event_type == "token":
                     meta = {"event_type": "token"}
                     await updater.update_status(
                         TaskState.working,
-                        _agent_message(
-                            content,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(content, task.context_id, task.id, metadata=meta),
                         metadata=meta,
                     )
 
-                # ----- thought (LLM text accompanying tool calls) -----
+                # ----- thought: accumulated content that preceded tool calls -----
                 elif event_type == "thought":
+                    logger.info("[executor] thought content_len=%d: %r", len(content), content[:120])
                     meta = {"event_type": "llm_thought"}
                     await updater.update_status(
                         TaskState.working,
-                        _agent_message(
-                            content,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(content, task.context_id, task.id, metadata=meta),
                         metadata=meta,
                     )
 
@@ -224,19 +213,13 @@ class MultimodalAgentExecutor(AgentExecutor):
                         "tool_name": tool_name,
                         "tool_input": tool_input,
                     }
-                    # Keep backward-compatible text prefix
                     display = f"[tool_start:{tool_name}] {content}"
                     if tool_input:
                         display += f"\n```json\n{tool_input}\n```"
-                    logger.info("Sending tool_call to A2A: %s", display[:200])
+                    logger.info("[executor] tool_call tool=%s input_len=%d", tool_name, len(tool_input))
                     await updater.update_status(
                         TaskState.working,
-                        _agent_message(
-                            display,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(display, task.context_id, task.id, metadata=meta),
                         metadata=meta,
                     )
 
@@ -252,29 +235,20 @@ class MultimodalAgentExecutor(AgentExecutor):
                     display = f"[tool_end:{tool_name}] {content}"
                     if tool_output:
                         display += f"\n```\n{tool_output}\n```"
-                    logger.info("Sending tool_result to A2A: %s", display[:200])
+                    logger.info("[executor] tool_result tool=%s output_len=%d", tool_name, len(tool_output))
                     await updater.update_status(
                         TaskState.working,
-                        _agent_message(
-                            display,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(display, task.context_id, task.id, metadata=meta),
                         metadata=meta,
                     )
 
                 # ----- require_user_input -----
                 elif require_user_input:
+                    logger.info("[executor] input_required: %r", content[:120])
                     meta = {"event_type": "input_required"}
                     await updater.update_status(
                         TaskState.input_required,
-                        _agent_message(
-                            content,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(content, task.context_id, task.id, metadata=meta),
                         final=True,
                         metadata=meta,
                     )
@@ -282,6 +256,7 @@ class MultimodalAgentExecutor(AgentExecutor):
 
                 # ----- task complete → final_response -----
                 elif is_task_complete:
+                    logger.info("[executor] final_response content_len=%d: %r", len(content), content[:120])
                     meta = {"event_type": "final_response"}
                     await updater.add_artifact(
                         [Part(root=TextPart(text=content))],
@@ -289,26 +264,17 @@ class MultimodalAgentExecutor(AgentExecutor):
                         metadata=meta,
                     )
                     await updater.complete(
-                        message=_agent_message(
-                            content,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        message=_agent_message(content, task.context_id, task.id, metadata=meta),
                     )
                     break
 
-                # ----- generic status (e.g. "Processing images…") -----
+                # ----- generic status -----
                 else:
+                    logger.info("[executor] status event: %r", content[:120])
                     meta = {"event_type": "status"}
                     await updater.update_status(
                         TaskState.working,
-                        _agent_message(
-                            content,
-                            task.context_id,
-                            task.id,
-                            metadata=meta,
-                        ),
+                        _agent_message(content, task.context_id, task.id, metadata=meta),
                         metadata=meta,
                     )
 

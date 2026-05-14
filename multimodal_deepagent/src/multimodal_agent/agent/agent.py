@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json as _json
 import logging
@@ -10,7 +9,7 @@ import os
 from collections.abc import AsyncIterable
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from multimodal_agent.configs.config import IMAGE_MODE, MEMORIES_DIR, MCP_SERVER_URL, SKILLS_DIR, UPLOADS_DIR, object_store_available
@@ -52,6 +51,22 @@ if os.environ.get("PHOENIX_COLLECTOR_ENDPOINT"):
 logger = logging.getLogger(__name__)
 
 SUPPORTED_CONTENT_TYPES = ["text", "text/plain", "image/png", "image/jpeg", "video/mp4"]
+
+
+def _extract_text(content: Any) -> str:
+    """Extract plain text from message content (str or list of content blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return ""
 
 
 
@@ -294,89 +309,166 @@ class MultimodalAgent:
         messages.append(HumanMessage(content=content))
 
         input_payload = {"messages": messages}
-        logger.info("Agent input payload: %s", str(input_payload))
+        logger.info("[stream] starting — context_id=%s query_len=%d", context_id, len(query))
+        logger.debug("[stream] input_payload: %s", str(input_payload)[:500])
         config = {"configurable": {"thread_id": context_id}, "recursion_limit": 100}
-        processed_ids: set[str] = set()
 
-        # Process the snapshot
-        async def _process_snapshot(data: dict):
-            message = data["messages"][-1]
-            msg_id = getattr(message, "id", None)
-            if msg_id:
-                if msg_id in processed_ids:
-                    return
-                processed_ids.add(msg_id)
+        # ── Per-LLM-invocation streaming state ─────────────────────────────
+        # Each LLM call produces chunks with the same message ID.  When the ID
+        # changes we know a new invocation has started (e.g. after tool results).
+        current_msg_id: str | None = None
+        turn_has_thought = False   # True once we've emitted a "thought" for this turn
+        turn_content = ""          # Accumulated content for the current LLM turn
+        processed_update_ids: set[str] = set()  # Dedup complete messages from updates
+        # Guard against middleware nodes whose `updates` AIMessage is not the real
+        # final response.  Middleware (e.g. parse_messages_before_model.before_model)
+        # never produces `messages` stream chunks, so this flag stays False during
+        # their updates and we skip them.
+        has_pending_llm_output = False
 
-            if isinstance(message, AIMessage) and message.tool_calls:
-                if message.content:
+        async for chunk in self.agent.astream(
+            input_payload, config,
+            stream_mode=["messages", "updates"],
+            version="v2",
+            subgraphs=True,
+        ):
+            ctype = chunk["type"]
+            data = chunk["data"]
+
+            # ── Real-time LLM token streaming ─────────────────────────────
+            if ctype == "messages":
+                msg_chunk, meta = data
+                if not isinstance(msg_chunk, AIMessageChunk):
+                    continue
+
+                node = meta.get("langgraph_node", "?")
+                msg_id = getattr(msg_chunk, "id", None)
+
+                # Detect new LLM invocation → reset per-turn state
+                if msg_id and msg_id != current_msg_id:
+                    logger.debug("[stream] new LLM turn id=%s node=%s", msg_id, node)
+                    current_msg_id = msg_id
+                    turn_has_thought = False
+                    turn_content = ""
+
+                chunk_text = _extract_text(msg_chunk.content)
+                if chunk_text:
+                    turn_content += chunk_text
+                    has_pending_llm_output = True
+                    logger.debug("[stream] token node=%s len=%d: %r", node, len(chunk_text), chunk_text[:60])
                     yield {
                         "is_task_complete": False,
                         "require_user_input": False,
-                        "content": message.content,
-                        "event_type": "thought",
-                    }
-                for tc in message.tool_calls:
-                    tool_name = tc.get("name", "unknown_tool")
-                    try:
-                        input_str = _json.dumps(tc.get("args", {}), indent=2)
-                    except Exception:
-                        input_str = str(tc.get("args", {}))
-                    if len(input_str) > 500:
-                        input_str = input_str[:500] + "…"
-                    yield {
-                        "is_task_complete": False,
-                        "require_user_input": False,
-                        "content": f"🔧 Calling tool: **{tool_name}**",
-                        "event_type": "tool_start",
-                        "tool_name": tool_name,
-                        "tool_input": input_str,
-                    }
-
-            elif isinstance(message, ToolMessage):
-                tool_name = getattr(message, "name", "unknown")
-                output_str = str(message.content)
-                has_media = any(
-                    marker in output_str
-                    for marker in ('"type": "image"', "'type': 'image'", "data:image/")
-                )
-                if not has_media and len(output_str) > 800:
-                    output_str = output_str[:800] + "…"
-                yield {
-                    "is_task_complete": False,
-                    "require_user_input": False,
-                    "content": f"✅ Tool **{tool_name}** completed",
-                    "event_type": "tool_end",
-                    "tool_name": tool_name,
-                    "tool_output": output_str,
-                }
-
-            elif isinstance(message, AIMessage) and not message.tool_calls and message.content:
-                text = message.content
-                words = text.split(" ")
-                for i in range(0, len(words), 3):
-                    chunk = " ".join(words[i:i + 3])
-                    if i + 3 < len(words):
-                        chunk += " "
-                    yield {
-                        "is_task_complete": False,
-                        "require_user_input": False,
-                        "content": chunk,
+                        "content": chunk_text,
                         "event_type": "token",
                     }
-                    await asyncio.sleep(0.01)
-                yield {
-                    "is_task_complete": True,
-                    "require_user_input": False,
-                    "content": text,
-                    "event_type": "final_response",
-                }
 
-        # Run the agent
-        async for _, data in self.agent.astream(
-            input_payload, config, stream_mode="values", subgraphs=True
-        ):
-            async for event in _process_snapshot(data):
-                yield event
+                # First tool-call chunk → retroactively label accumulated content as a thought
+                if msg_chunk.tool_call_chunks:
+                    has_pending_llm_output = True
+
+                if msg_chunk.tool_call_chunks and not turn_has_thought:
+                    turn_has_thought = True
+                    logger.info(
+                        "[stream] thought signalled turn=%s content_len=%d: %r",
+                        current_msg_id, len(turn_content), turn_content[:120],
+                    )
+                    yield {
+                        "is_task_complete": False,
+                        "require_user_input": False,
+                        "content": turn_content,
+                        "event_type": "thought",
+                    }
+
+            # ── Node-completion events (tool calls, tool results, final response) ─
+            elif ctype == "updates":
+                if not isinstance(data, dict):
+                    continue
+
+                for node_name, node_data in data.items():
+                    if not isinstance(node_data, dict):
+                        continue
+
+                    msgs = node_data.get("messages", [])
+                    if not isinstance(msgs, list):
+                        msgs = [msgs]
+
+                    for msg in msgs:
+                        uid = getattr(msg, "id", None)
+                        if uid:
+                            if uid in processed_update_ids:
+                                logger.debug("[stream] skipping duplicate update msg id=%s", uid)
+                                continue
+                            processed_update_ids.add(uid)
+
+                        if isinstance(msg, AIMessage) and msg.tool_calls:
+                            if not has_pending_llm_output:
+                                logger.debug(
+                                    "[stream] skip tool-call AIMessage — no preceding messages chunks (node=%s)",
+                                    node_name,
+                                )
+                                continue
+                            has_pending_llm_output = False
+                            logger.info(
+                                "[stream] tool_calls node=%s tools=%s",
+                                node_name, [tc.get("name") for tc in msg.tool_calls],
+                            )
+                            for tc in msg.tool_calls:
+                                tool_name = tc.get("name", "unknown_tool")
+                                try:
+                                    input_str = _json.dumps(tc.get("args", {}), indent=2)
+                                except Exception:
+                                    input_str = str(tc.get("args", {}))
+                                if len(input_str) > 500:
+                                    input_str = input_str[:500] + "…"
+                                yield {
+                                    "is_task_complete": False,
+                                    "require_user_input": False,
+                                    "content": f"🔧 Calling tool: **{tool_name}**",
+                                    "event_type": "tool_start",
+                                    "tool_name": tool_name,
+                                    "tool_input": input_str,
+                                }
+
+                        elif isinstance(msg, ToolMessage):
+                            tool_name = getattr(msg, "name", "unknown")
+                            output_str = str(msg.content)
+                            has_media = any(
+                                m in output_str
+                                for m in ('"type": "image"', "'type': 'image'", "data:image/")
+                            )
+                            if not has_media and len(output_str) > 800:
+                                output_str = output_str[:800] + "…"
+                            logger.info("[stream] tool_end node=%s tool=%s", node_name, tool_name)
+                            yield {
+                                "is_task_complete": False,
+                                "require_user_input": False,
+                                "content": f"✅ Tool **{tool_name}** completed",
+                                "event_type": "tool_end",
+                                "tool_name": tool_name,
+                                "tool_output": output_str,
+                            }
+
+                        elif isinstance(msg, AIMessage) and not msg.tool_calls:
+                            if not has_pending_llm_output:
+                                logger.debug(
+                                    "[stream] skip AIMessage — no preceding messages chunks, likely middleware (node=%s content=%r)",
+                                    node_name, _extract_text(msg.content)[:80],
+                                )
+                                continue
+                            has_pending_llm_output = False
+                            text = _extract_text(msg.content)
+                            if text:
+                                logger.info(
+                                    "[stream] final_response node=%s len=%d: %r",
+                                    node_name, len(text), text[:120],
+                                )
+                                yield {
+                                    "is_task_complete": True,
+                                    "require_user_input": False,
+                                    "content": text,
+                                    "event_type": "final_response",
+                                }
 
     # ------------------------------------------------------------------
     # State helper
